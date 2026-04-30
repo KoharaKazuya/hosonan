@@ -42,7 +42,16 @@
 
 最終出力は Markdown 記事のみとします。内部の調査メモ、思考過程、採用しなかった候補は出力しないでください。
 
-最終出力の先頭には、必ず YAML front matter を置いてください。`slug` は `articles/YYYY-MM-DD/<topic-slug>.md` の `<topic-slug>` として使います。
+最終出力の先頭には、必ず YAML front matter を置いてください。front matter には、固定ルールとして次のキーを必ず含めます。`slug` は `articles/YYYY-MM-DD/<topic-slug>.md` の `<topic-slug>` として使います。
+
+```yaml
+title: <記事のタイトル>
+slug: <topic-slug>
+createdAt: <記事の作成日時(RFC3339)>
+updatedAt: <記事の更新日時(RFC3339)>
+```
+
+`createdAt` と `updatedAt` は、記事生成時点の日時を実行ユーザー環境のタイムゾーンに従って RFC3339 形式で記載してください。タイムゾーンは `Z` または `+HH:MM` / `-HH:MM` の RFC3339 オフセット表現で日時内に含めます。記事作成時点では、原則として同じ日時にします。
 
 `slug` は次の検証ルールを必ず満たしてください。スクリプトは `slug` を補正せず、検証に失敗した場合は記事保存を失敗させます。
 

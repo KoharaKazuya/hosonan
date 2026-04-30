@@ -18,7 +18,10 @@
 
 ```markdown
 ---
+title: 記事タイトル
 slug: topic-slug
+createdAt: YYYY-MM-DDTHH:mm:ss+HH:MM
+updatedAt: YYYY-MM-DDTHH:mm:ss+HH:MM
 ---
 
 # 記事タイトル
