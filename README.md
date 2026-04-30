@@ -58,11 +58,9 @@ Markdown 出力
 ```text
 .
 ├── README.md
-├── prompts/
-│   ├── entrypoint.md
-│   ├── user-profile.md
-│   ├── article-guidelines.md
-│   └── sources.md
+├── PROMPT.md
+├── config/
+│   └── user-profile.md
 ├── articles/
 │   └── YYYY-MM-DD/
 │       ├── topic-slug.md
@@ -85,14 +83,15 @@ $ codex login
 $ codex exec --search "指定したトピックについて最新ニュースを調査し、出典付きの Markdown 記事を作成してください。トピックが複数ある場合は、記事ごとに分けて作成してください"
 ```
 
-プロンプトは、役割ごとに分割して管理します。
+記事生成に必要な共通プロンプトは、ルート直下の 1 ファイルで管理します。
 
-- `prompts/entrypoint.md`: 記事生成ワークフロー全体を指示する入口
-- `prompts/user-profile.md`: ユーザーの好み、関心、避けたい内容
-- `prompts/article-guidelines.md`: 記事の文体、形式、品質基準
-- `prompts/sources.md`: 情報源の優先順位、採用基準、検証ルール
+- `PROMPT.md`: 記事生成ワークフロー、記事の文体、形式、品質基準、情報源の優先順位、採用基準、検証ルール
 
-実行時は `entrypoint.md` を入口にし、他の 3 ファイルの内容をあわせて参照します。ユーザーの関心や記事フォーマットを変更したい場合は、入口プロンプトではなく該当する補助ファイルを編集します。
+ユーザーの好みや関心は、設定ファイル用のディレクトリに分けて管理します。
+
+- `config/user-profile.md`: ユーザーの好み、関心、避けたい内容
+
+実行時は `PROMPT.md` と `config/user-profile.md` をあわせて参照します。記事フォーマットや情報源の扱いを変更したい場合は `PROMPT.md` を編集し、読者像や好みだけを変えたい場合は `config/user-profile.md` を編集します。
 
 自動化スクリプトから使う場合は、最終メッセージをファイルに保存できます。
 
