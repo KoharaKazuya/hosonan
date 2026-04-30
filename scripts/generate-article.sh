@@ -9,8 +9,6 @@ fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 prompt_file="${repo_root}/PROMPT.md"
-user_profile_file="${repo_root}/config/user-profile.md"
-article_format_file="${repo_root}/config/article-format.md"
 run_date="$(date +%F)"
 run_time="$(date +%H%M%S)"
 output_dir="${repo_root}/articles/${run_date}"
@@ -43,27 +41,11 @@ available_output_file() {
   printf '%s' "$path"
 }
 
-if [[ ! -f "$prompt_file" ]]; then
-  echo "error: PROMPT.md was not found: $prompt_file" >&2
-  exit 1
-fi
-
-if [[ ! -f "$user_profile_file" ]]; then
-  echo "error: user profile was not found: $user_profile_file" >&2
-  exit 1
-fi
-
-if [[ ! -f "$article_format_file" ]]; then
-  echo "error: article format was not found: $article_format_file" >&2
-  exit 1
-fi
-
 mkdir -p "$output_dir"
 : > "$temp_output_file"
 
 log "prompt: $(relative_path "$prompt_file")"
-log "profile: $(relative_path "$user_profile_file")"
-log "article format: $(relative_path "$article_format_file")"
+log "config directory: config/"
 log "output directory: $(relative_path "$output_dir")"
 log "web search: live"
 log "running codex"
