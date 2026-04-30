@@ -16,6 +16,20 @@ output_dir="${repo_root}/articles/${run_date}"
 temp_output_file="${output_dir}/.generating-${run_time}-$$.md"
 trap 'rm -f "$temp_output_file"' EXIT
 
+log() {
+  printf '%s\n' "$*" >&2
+}
+
+relative_path() {
+  local path="$1"
+
+  if [[ "$path" == "$repo_root"/* ]]; then
+    printf '%s' "${path#"$repo_root"/}"
+  else
+    printf '%s' "$path"
+  fi
+}
+
 available_output_file() {
   local path="${output_dir}/$1.md"
   local index=2
@@ -41,11 +55,21 @@ fi
 mkdir -p "$output_dir"
 : > "$temp_output_file"
 
-codex exec --search --cd "$repo_root" --output-last-message "$temp_output_file" - < "$prompt_file"
+log "prompt: $(relative_path "$prompt_file")"
+log "profile: $(relative_path "$user_profile_file")"
+log "output directory: $(relative_path "$output_dir")"
+log "web search: live"
+log "running codex"
+
+codex --search exec --cd "$repo_root" --output-last-message "$temp_output_file" - < "$prompt_file" > /dev/null
 
 slug="$(awk -F: '/^slug:[[:space:]]*/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }' "$temp_output_file")"
 if [[ ! "$slug" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
-  echo "error: invalid slug in generated article: $slug" >&2
+  if [[ -z "$slug" ]]; then
+    echo "error: generated article is missing slug metadata" >&2
+  else
+    echo "error: invalid slug in generated article: $slug" >&2
+  fi
   exit 1
 fi
 
@@ -53,4 +77,4 @@ output_file="$(available_output_file "$slug")"
 mv "$temp_output_file" "$output_file"
 trap - EXIT
 
-echo "generated: $output_file"
+echo "generated: $(relative_path "$output_file")"
