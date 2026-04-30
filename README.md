@@ -53,9 +53,10 @@ Markdown 出力
 .
 ├── README.md
 ├── prompts/
-│   ├── collect-news.md
-│   ├── generate-article.md
-│   └── validate-article.md
+│   ├── entrypoint.md
+│   ├── user-profile.md
+│   ├── article-guidelines.md
+│   └── sources.md
 ├── articles/
 │   └── YYYY-MM-DD/
 │       └── topic-slug.md
@@ -79,6 +80,15 @@ $ codex login
 ```console
 $ codex exec --search "指定したトピックについて最新ニュースを調査し、出典付きの Markdown 記事を作成してください"
 ```
+
+プロンプトは、役割ごとに分割して管理します。
+
+- `prompts/entrypoint.md`: 記事生成ワークフロー全体を指示する入口
+- `prompts/user-profile.md`: ユーザーの好み、関心、避けたい内容
+- `prompts/article-guidelines.md`: 記事の文体、形式、品質基準
+- `prompts/sources.md`: 情報源の優先順位、採用基準、検証ルール
+
+実行時は `entrypoint.md` を入口にし、他の 3 ファイルの内容をあわせて参照します。ユーザーの関心や記事フォーマットを変更したい場合は、入口プロンプトではなく該当する補助ファイルを編集します。
 
 自動化スクリプトから使う場合は、最終メッセージをファイルに保存できます。
 
