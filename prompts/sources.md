@@ -31,7 +31,7 @@
 
 ## 出典メタデータ
 
-記事とは別に出典情報を保存する場合は、次の JSON 形式を基本にします。
+記事とは別に出典情報を保存する場合は、記事ごとに JSON を保存する形式を基本にします。複数記事を 1 回で生成した場合も、記事単位で出典を追跡できるようにしてください。
 
 ```json
 {
@@ -46,6 +46,21 @@
       "accessed_at": "YYYY-MM-DDTHH:mm:ss+09:00",
       "source_type": "official | primary | media | secondary",
       "used_for": ["事実確認", "背景説明"]
+    }
+  ]
+}
+```
+
+複数記事の生成結果をまとめて管理する場合は、次のようなバッチ用メタデータを追加できます。
+
+```json
+{
+  "generated_at": "YYYY-MM-DDTHH:mm:ss+09:00",
+  "articles": [
+    {
+      "topic": "キーワード",
+      "article_path": "articles/YYYY-MM-DD/topic-slug.md",
+      "sources_path": "sources/YYYY-MM-DD/topic-slug.json"
     }
   ]
 }
