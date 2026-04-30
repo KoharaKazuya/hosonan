@@ -71,7 +71,7 @@ log "running codex"
 codex --search exec --cd "$repo_root" --output-last-message "$temp_output_file" - < "$prompt_file" > /dev/null
 
 slug="$(awk -F: '/^slug:[[:space:]]*/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }' "$temp_output_file")"
-if [[ ! "$slug" =~ ^[a-z0-9][a-z0-9_-]*$ ]]; then
+if [[ ! "$slug" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
   if [[ -z "$slug" ]]; then
     echo "error: generated article is missing slug metadata" >&2
   else
