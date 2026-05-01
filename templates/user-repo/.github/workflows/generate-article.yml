@@ -1,0 +1,35 @@
+name: Generate article
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 22 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: <owner>/<action-repo>@v1
+        with:
+          timezone: Asia/Tokyo
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+      - name: Commit generated article
+        run: |
+          set -euo pipefail
+          if [[ -z "$(git status --porcelain -- articles)" ]]; then
+            echo "No generated article changes to commit."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add articles
+          git commit -m "feat: 新しい記事を生成する
+
+          Codex CLI によって生成された記事本文とサムネイルを articles/ 以下に追加します。
+          生成日時のタイムゾーンには action input の timezone を使用します。"
+          git push

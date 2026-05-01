@@ -1,0 +1,15 @@
+name: Generate article
+description: Generate one sourced Markdown article and thumbnail with Codex CLI.
+
+inputs:
+  timezone:
+    description: Timezone used for article date directories and metadata guidance.
+    required: false
+    default: Asia/Tokyo
+  openai-api-key:
+    description: OpenAI API key used by Codex CLI in GitHub Actions.
+    required: true
+
+runs:
+  using: docker
+  image: Dockerfile
