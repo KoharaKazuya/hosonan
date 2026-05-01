@@ -57,7 +57,7 @@ jobs:
           git push
 ```
 
-利用側リポジトリには `OPENAI_API_KEY` secret を設定してください。action 内では `openai-api-key` input として受け取り、Codex CLI の実行に使います。この Docker container action は `articles/` 以下にファイルを出力するところまでを担当します。生成された差分の commit / push は、利用側 workflow の後続 step で行ってください。
+利用側リポジトリには `OPENAI_API_KEY` secret を設定してください。action 内では必須の `openai-api-key` input として受け取り、`OPENAI_API_KEY` として Codex CLI に渡します。この Docker container action は `articles/` 以下にファイルを出力するところまでを担当します。生成された差分の commit / push は、利用側 workflow の後続 step で行ってください。
 
 利用側がこの Action リポジトリを指定する箇所は `uses: <owner>/<action-repo>@v1` の 1 箇所だけです。GitHub Actions はこのリポジトリの `Dockerfile` を build し、`node:24-bookworm-slim` ベースの container 内で Codex CLI と entrypoint を実行します。
 
@@ -113,7 +113,7 @@ jobs:
 
 ## Codex CLI の前提
 
-Action image 内に Codex CLI をインストールし、`OPENAI_API_KEY` を使って実行します。
+Action image 内に Codex CLI をインストールし、GitHub Actions では必須の `openai-api-key` input を `OPENAI_API_KEY` として渡して実行します。entrypoint を直接実行する場合は `OPENAI_API_KEY` を必須チェックせず、認証は Codex CLI の実行環境に委ねます。
 
 記事生成に必要なシステム上の制約は、この Action リポジトリのルート直下の 1 ファイルで管理します。
 
@@ -153,7 +153,7 @@ entrypoint は `PROMPT.md` をそのまま Codex CLI に渡します。Codex CLI
 
 - `Dockerfile` を使って `node:24-bookworm-slim` ベースの action image を build する
 - image 内に Codex CLI と、`bash`、`ca-certificates`、`file`、`imagemagick` を用意する
-- `openai-api-key` input が空でないことを確認し、`OPENAI_API_KEY` として Codex CLI に渡す
+- 必須の `openai-api-key` input を `OPENAI_API_KEY` として Codex CLI に渡す
 - `/opt/article-generator` にある `PROMPT.md` と entrypoint で、`/github/workspace` の `config/` と `articles/` を参照し、`draft/` を生成・検証して `articles/YYYY-MM-DD/<slug>/` に配置する
 - commit / push は行わず、利用側 workflow の後続 step に委ねる
 
@@ -165,7 +165,7 @@ entrypoint は mock Codex で検証できます。
 $ tests/run-generate-article.sh
 ```
 
-このテストは、Docker action 定義、Dockerfile の主要設定、workflow テンプレート、正常生成、slug 衝突時の連番、slug 不正、サムネイル不足、MIME 不一致、サイズ不一致、API key 検証と非 commit 動作を確認します。
+このテストは、Docker action 定義、Dockerfile の主要設定、workflow テンプレート、正常生成、slug 衝突時の連番、slug 不正、サムネイル不足、MIME 不一致、サイズ不一致、Codex CLI への認証委譲と非 commit 動作を確認します。
 
 ## 記事生成時の方針
 

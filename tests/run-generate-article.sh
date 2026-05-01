@@ -93,7 +93,6 @@ run_runner() {
   MAKE_WEBP="${test_root}/make-webp" \
   ARTICLE_REPO_ROOT="$fixture" \
   ARTICLE_GENERATOR_ROOT="$repo_root" \
-  OPENAI_API_KEY=test-key \
   TZ=UTC \
   "$@" \
   "$repo_root/entrypoint.sh"
@@ -203,26 +202,19 @@ fixture="${test_root}/wrong-size"
 create_fixture_repo "$fixture"
 assert_failure "rejects a thumbnail with the wrong dimensions" run_runner "$fixture" env MOCK_THUMBNAIL=wrong-size
 
-fixture="${test_root}/runner-missing-key"
+fixture="${test_root}/runner-without-key"
 create_fixture_repo "$fixture"
-assert_failure "runner requires OPENAI_API_KEY" env \
-  PATH="${test_root}/bin:${PATH}" \
-  MAKE_WEBP="${test_root}/make-webp" \
-  ARTICLE_REPO_ROOT="$fixture" \
-  ARTICLE_GENERATOR_ROOT="$repo_root" \
-  OPENAI_API_KEY= \
-  TZ=UTC \
-  "$repo_root/entrypoint.sh"
+assert_success "runner lets Codex CLI handle authentication without OPENAI_API_KEY" run_runner "$fixture" env OPENAI_API_KEY=
 
 fixture="${test_root}/entrypoint-valid"
 create_git_fixture_repo "$fixture"
 before_head="$(git -C "$fixture" rev-parse HEAD)"
-assert_success "action entrypoint runs the generator without committing article changes" run_action_entrypoint "$fixture" env INPUT_OPENAI_API_KEY=test-key
+assert_success "action entrypoint runs the generator without committing article changes" run_action_entrypoint "$fixture" env
 test -f "${fixture}/articles/$(TZ=UTC date +%F)/mock-article/index.md"
 after_head="$(git -C "$fixture" rev-parse HEAD)"
 test "$before_head" = "$after_head"
 test -n "$(git -C "$fixture" status --porcelain -- articles)"
 
-fixture="${test_root}/entrypoint-missing-key"
+fixture="${test_root}/entrypoint-with-input-key"
 create_git_fixture_repo "$fixture"
-assert_failure "action entrypoint requires an OpenAI API key" run_action_entrypoint "$fixture" env OPENAI_API_KEY=
+assert_success "action entrypoint still accepts an OpenAI API key input" run_action_entrypoint "$fixture" env INPUT_OPENAI_API_KEY=test-key

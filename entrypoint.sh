@@ -26,11 +26,6 @@ codex_bin="${CODEX_BIN:-codex}"
 article_repo_root="$(cd "$article_repo_root" && pwd)"
 generator_root="$(cd "$generator_root" && pwd)"
 
-if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-  echo "error: openai-api-key input or OPENAI_API_KEY is required." >&2
-  exit 1
-fi
-
 if [[ -n "${ARTICLE_TIMEZONE:-}" ]]; then
   export TZ="$ARTICLE_TIMEZONE"
 fi
