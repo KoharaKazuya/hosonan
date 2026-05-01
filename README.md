@@ -61,6 +61,8 @@ jobs:
 
 利用側がこの Action リポジトリを指定する箇所は `uses: <owner>/<action-repo>@v1` の 1 箇所だけです。GitHub Actions はこのリポジトリの `Dockerfile` を build し、`node:24-bookworm-slim` ベースの container 内で Codex CLI と entrypoint を実行します。
 
+Action image は `node:24-bookworm-slim` をベースにし、Codex CLI と記事生成に必要な最小限の実用パッケージだけを追加します。`codex-universal` は多言語開発環境向けの参照 image としては有用ですが、この Action では記事生成に使わないランタイムやビルドツールまで含める必要がないため採用しません。
+
 ## アーキテクチャ案
 
 ```text
@@ -152,10 +154,20 @@ entrypoint は `PROMPT.md` をそのまま Codex CLI に渡します。Codex CLI
 `action.yml` は次の処理を行います。
 
 - `Dockerfile` を使って `node:24-bookworm-slim` ベースの action image を build する
-- image 内に Codex CLI と、`bash`、`ca-certificates`、`file`、`imagemagick` を用意する
+- image 内に Codex CLI と、`bash`、`bubblewrap`、`ca-certificates`、`file`、`git`、`imagemagick`、`ripgrep`、`tzdata`、`webp` を用意する
 - 必須の `openai-api-key` input を `OPENAI_API_KEY` として Codex CLI に渡す
 - `/opt/article-generator` にある `PROMPT.md` と entrypoint で、`/github/workspace` の `config/` と `articles/` を参照し、`draft/` を生成・検証して `articles/YYYY-MM-DD/<slug>/` に配置する
 - commit / push は行わず、利用側 workflow の後続 step に委ねる
+
+追加パッケージの役割は次の通りです。
+
+- `bubblewrap`: Codex CLI の Linux sandbox 用
+- `git`: Codex CLI によるリポジトリ判定と状態確認用
+- `ripgrep`: `config/` と既存 `articles/` の高速探索用
+- `tzdata`: `timezone` input による日付生成の安定化用
+- `webp`: `thumbnail.webp` の生成・変換に使う `cwebp` などの提供用
+
+`jq`、`curl`、`wget`、`build-essential`、多言語ランタイム類は、現在の entrypoint と生成フローでは必須ではないため image には追加しません。
 
 ## テスト
 

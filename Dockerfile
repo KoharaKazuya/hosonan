@@ -3,9 +3,14 @@ FROM node:24-bookworm-slim
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
     bash \
+    bubblewrap \
     ca-certificates \
     file \
+    git \
     imagemagick \
+    ripgrep \
+    tzdata \
+    webp \
   && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g @openai/codex@latest
