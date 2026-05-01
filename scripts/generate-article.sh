@@ -13,6 +13,7 @@ run_date="$(date +%F)"
 date_dir="${repo_root}/articles/${run_date}"
 draft_dir="${repo_root}/draft"
 draft_index_file="${draft_dir}/index.md"
+draft_thumbnail_file="${draft_dir}/thumbnail.webp"
 
 log() {
   printf '%s\n' "$*" >&2
@@ -38,6 +39,33 @@ available_output_dir() {
   done
 
   printf '%s' "$path"
+}
+
+image_dimensions() {
+  local image_file="$1"
+  local width=""
+  local height=""
+
+  if command -v sips >/dev/null 2>&1; then
+    width="$(sips -g pixelWidth "$image_file" 2>/dev/null | awk '/pixelWidth:/ { print $2; exit }')"
+    height="$(sips -g pixelHeight "$image_file" 2>/dev/null | awk '/pixelHeight:/ { print $2; exit }')"
+    if [[ -n "$width" && -n "$height" ]]; then
+      printf '%s %s\n' "$width" "$height"
+      return 0
+    fi
+  fi
+
+  if command -v magick >/dev/null 2>&1; then
+    magick identify -format '%w %h\n' "$image_file"
+    return
+  fi
+
+  if command -v identify >/dev/null 2>&1; then
+    identify -format '%w %h\n' "$image_file"
+    return
+  fi
+
+  return 1
 }
 
 if [[ -e "$draft_dir" ]]; then
@@ -68,6 +96,29 @@ codex --search --sandbox workspace-write --ask-for-approval never exec --cd "$dr
 
 if [[ ! -f "$draft_index_file" ]]; then
   echo "error: generated draft is missing index.md" >&2
+  exit 1
+fi
+
+if [[ ! -f "$draft_thumbnail_file" ]]; then
+  echo "error: generated draft is missing thumbnail.webp" >&2
+  exit 1
+fi
+
+thumbnail_type="$(file --brief --mime-type "$draft_thumbnail_file")"
+if [[ "$thumbnail_type" != "image/webp" ]]; then
+  echo "error: generated thumbnail is not WebP: $thumbnail_type" >&2
+  exit 1
+fi
+
+thumbnail_dimensions="$(image_dimensions "$draft_thumbnail_file" || true)"
+if [[ -z "$thumbnail_dimensions" ]]; then
+  echo "error: could not validate thumbnail dimensions; install sips or ImageMagick" >&2
+  exit 1
+fi
+
+read -r thumbnail_width thumbnail_height <<< "$thumbnail_dimensions"
+if [[ "$thumbnail_width" != "1200" || "$thumbnail_height" != "630" ]]; then
+  echo "error: invalid thumbnail dimensions: ${thumbnail_width:-unknown}x${thumbnail_height:-unknown} (expected 1200x630)" >&2
   exit 1
 fi
 

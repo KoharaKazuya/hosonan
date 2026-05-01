@@ -19,7 +19,7 @@ Codex CLI をベースに、最新のインターネットニュースを収集�
 2. Codex CLI が `PROMPT.md` と `config/` 以下に置かれた任意の設定ファイルをもとに記事化するニュースを選ぶ
 3. Codex CLI が Web 検索を使って関連ニュースを収集する
 4. 収集結果から信頼できる一次情報や主要メディアの記事を優先して整理する
-5. `draft/` 以下に記事本文と必要な添付画像を生成する
+5. `draft/` 以下に記事本文と記事サムネイル画像を生成する
 6. 自動品質チェックを通過した `draft/` を日付と slug に基づいて `articles/` 以下へ配置する
 
 ## アーキテクチャ案
@@ -70,9 +70,11 @@ Codex CLI をベースに、最新のインターネットニュースを収集�
 ├── articles/
 │   └── YYYY-MM-DD/
 │       ├── topic-slug/
-│       │   └── index.md
+│       │   ├── index.md
+│       │   └── thumbnail.webp
 │       └── another-topic-slug/
-│           └── index.md
+│           ├── index.md
+│           └── thumbnail.webp
 └── scripts/
     └── generate-article.sh
 ```
@@ -103,7 +105,8 @@ $ codex login
 - 空の `draft/` ディレクトリの作成
 - `PROMPT.md` の Codex CLI への標準入力渡し
 - Codex CLI の作業ディレクトリを `draft/` に限定し、`draft/` 以下だけを書き込み可能にする sandbox 設定
-- Codex CLI による `draft/index.md` と必要な添付画像の生成
+- Codex CLI による `draft/index.md` と `draft/thumbnail.webp` の生成
+- `draft/thumbnail.webp` が 1200x630px の WebP 画像であることの検証
 - `draft/index.md` の front matter から `slug` を検証
 - `articles/YYYY-MM-DD/` ディレクトリの作成
 - 生成された記事のトピックに基づく `articles/YYYY-MM-DD/<topic-slug>/` への `draft/` のリネーム
@@ -114,7 +117,7 @@ $ scripts/generate-article.sh
 
 スクリプトは `PROMPT.md` をそのまま Codex CLI に渡します。Codex CLI は `draft/` を作業ディレクトリとして起動され、`PROMPT.md` の指示に従って `../config/` 以下の設定ファイルと既存の `../articles/**/*.md`、`../articles/**/index.md` を参照します。1 回の実行で 1 本の記事を生成します。
 
-出力先は `articles/YYYY-MM-DD/<topic-slug>/index.md` です。記事に画像などの添付ファイルがある場合は、同じ記事ディレクトリ内に配置されます。日付ごとにディレクトリを分けますが、1 日 1 本の前提は置きません。近いタイミングで繰り返し実行する前提のため、生成時は既存記事と重複しないトピックや新しい進展を選びます。同名ディレクトリがすでにある場合は、既存ディレクトリを上書きせず、末尾に連番を付けます。トピック、出力先、モデルなどはコマンド実行時に指定せず、必要な方針は `PROMPT.md` と `config/` 以下に記述します。
+出力先は `articles/YYYY-MM-DD/<topic-slug>/index.md` と `articles/YYYY-MM-DD/<topic-slug>/thumbnail.webp` です。サムネイル画像は 1200x630px の WebP 画像として生成します。記事にその他の添付ファイルがある場合は、同じ記事ディレクトリ内に配置されます。日付ごとにディレクトリを分けますが、1 日 1 本の前提は置きません。近いタイミングで繰り返し実行する前提のため、生成時は既存記事と重複しないトピックや新しい進展を選びます。同名ディレクトリがすでにある場合は、既存ディレクトリを上書きせず、末尾に連番を付けます。トピック、出力先、モデルなどはコマンド実行時に指定せず、必要な方針は `PROMPT.md` と `config/` 以下に記述します。
 
 生成開始時に `draft/` が空でない場合、スクリプトは既存内容を上書きせずに停止します。失敗した生成物を確認するか削除してから再実行してください。
 
