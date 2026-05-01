@@ -10,10 +10,9 @@ fi
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 prompt_file="${repo_root}/PROMPT.md"
 run_date="$(date +%F)"
-run_time="$(date +%H%M%S)"
-output_dir="${repo_root}/articles/${run_date}"
-temp_output_file="${output_dir}/.generating-${run_time}-$$.md"
-trap 'rm -f "$temp_output_file"' EXIT
+date_dir="${repo_root}/articles/${run_date}"
+draft_dir="${repo_root}/draft"
+draft_index_file="${draft_dir}/index.md"
 
 log() {
   printf '%s\n' "$*" >&2
@@ -29,30 +28,50 @@ relative_path() {
   fi
 }
 
-available_output_file() {
-  local path="${output_dir}/$1.md"
+available_output_dir() {
+  local path="${date_dir}/$1"
   local index=2
 
   while [[ -e "$path" ]]; do
-    path="${output_dir}/$1-${index}.md"
+    path="${date_dir}/$1-${index}"
     index=$((index + 1))
   done
 
   printf '%s' "$path"
 }
 
-mkdir -p "$output_dir"
-: > "$temp_output_file"
+if [[ -e "$draft_dir" ]]; then
+  if [[ ! -d "$draft_dir" ]]; then
+    echo "error: draft exists but is not a directory: $(relative_path "$draft_dir")" >&2
+    exit 1
+  fi
+
+  if [[ -n "$(find "$draft_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+    echo "error: draft directory is not empty: $(relative_path "$draft_dir")" >&2
+    exit 1
+  fi
+else
+  mkdir -p "$draft_dir"
+fi
+
+mkdir -p "$date_dir"
 
 log "prompt: $(relative_path "$prompt_file")"
 log "config directory: config/"
-log "output directory: $(relative_path "$output_dir")"
+log "draft directory: $(relative_path "$draft_dir")"
+log "output date directory: $(relative_path "$date_dir")"
 log "web search: live"
+log "sandbox: workspace-write ($(relative_path "$draft_dir") only)"
 log "running codex"
 
-codex --search exec --cd "$repo_root" --output-last-message "$temp_output_file" - < "$prompt_file" > /dev/null
+codex --search --sandbox workspace-write --ask-for-approval never exec --cd "$draft_dir" - < "$prompt_file" > /dev/null
 
-slug="$(awk -F: '/^slug:[[:space:]]*/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }' "$temp_output_file")"
+if [[ ! -f "$draft_index_file" ]]; then
+  echo "error: generated draft is missing index.md" >&2
+  exit 1
+fi
+
+slug="$(awk -F: '/^slug:[[:space:]]*/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }' "$draft_index_file")"
 if [[ ! "$slug" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
   if [[ -z "$slug" ]]; then
     echo "error: generated article is missing slug metadata" >&2
@@ -62,8 +81,7 @@ if [[ ! "$slug" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
   exit 1
 fi
 
-output_file="$(available_output_file "$slug")"
-mv "$temp_output_file" "$output_file"
-trap - EXIT
+output_dir="$(available_output_dir "$slug")"
+mv "$draft_dir" "$output_dir"
 
-echo "generated: $(relative_path "$output_file")"
+echo "generated: $(relative_path "$output_dir")"
