@@ -63,6 +63,36 @@ jobs:
 
 Action image は `node:24-bookworm-slim` をベースにし、Codex CLI と記事生成に必要な最小限の実用パッケージだけを追加します。`codex-universal` は多言語開発環境向けの参照 image としては有用ですが、この Action では記事生成に使わないランタイムやビルドツールまで含める必要がないため採用しません。
 
+### 手動実行
+
+GitHub Actions ではなく手元で動作確認する場合は、Action リポジトリで Docker image を build し、記事リポジトリを `/github/workspace` として mount して実行します。
+
+まず、この GitHub Actions リポジトリで action image を build します。
+
+```console
+$ docker build -t local/ai-generated-articles:dev .
+```
+
+次に、記事を生成したいリポジトリへ移動し、build 済みの image を起動します。
+
+```console
+$ docker run --rm -it -v "$PWD:/github/workspace" -w /github/workspace --entrypoint=/bin/bash local/ai-generated-articles:dev
+```
+
+起動した container 内で Codex CLI にログインします。手動実行では `OPENAI_API_KEY` を必須にせず、Codex CLI の認証状態に委ねます。
+
+```console
+$ codex login --device-auth
+```
+
+ログイン後、container 内で entrypoint を実行します。
+
+```console
+$ /opt/article-generator/entrypoint.sh
+```
+
+正常に完了すると、container 内の `/github/workspace/articles/`、つまり mount した記事リポジトリの `articles/` 以下に記事ディレクトリが生成されます。
+
 ## アーキテクチャ案
 
 ```text
