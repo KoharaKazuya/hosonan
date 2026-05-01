@@ -134,14 +134,15 @@ entrypoint は次の処理を 1 回のコマンドで行います。
 
 - 空の `draft/` ディレクトリの作成
 - Action リポジトリの `PROMPT.md` の Codex CLI への標準入力渡し
-- Codex CLI の作業ディレクトリを `draft/` に限定し、`draft/` 以下だけを書き込み可能にする sandbox 設定
+- Codex CLI の作業ディレクトリを `draft/` に指定
+- Docker container action 自体を隔離境界として扱い、Codex CLI 側の承認と sandbox をバイパス
 - Codex CLI による `draft/index.md` と `draft/thumbnail.webp` の生成
 - `draft/thumbnail.webp` が WebP かつ 1200x630px であることの検証
 - `draft/index.md` の front matter から `slug` を検証
 - `articles/YYYY-MM-DD/` ディレクトリの作成
 - 生成された記事のトピックに基づく `articles/YYYY-MM-DD/<topic-slug>/` への `draft/` のリネーム
 
-entrypoint は `PROMPT.md` をそのまま Codex CLI に渡します。Codex CLI は `draft/` を作業ディレクトリとして起動され、`PROMPT.md` の指示に従って `../config/` 以下の設定ファイルと既存の `../articles/**/*.md`、`../articles/**/index.md` を参照します。1 回の実行で 1 本の記事を生成します。
+entrypoint は `PROMPT.md` をそのまま Codex CLI に渡します。Codex CLI は `draft/` を作業ディレクトリとして起動され、`PROMPT.md` の指示に従って `../config/` 以下の設定ファイルと既存の `../articles/**/*.md`、`../articles/**/index.md` を参照します。Docker container action の中でさらに Codex CLI の Linux sandbox を作ると実行環境によって namespace 作成に失敗するため、Codex CLI は `--dangerously-bypass-approvals-and-sandbox` 付きで起動します。1 回の実行で 1 本の記事を生成します。
 
 出力先は `articles/YYYY-MM-DD/<topic-slug>/index.md` と `articles/YYYY-MM-DD/<topic-slug>/thumbnail.webp` です。サムネイル画像は 1200x630px の WebP 画像として生成します。記事にその他の添付ファイルがある場合は、同じ記事ディレクトリ内に配置されます。日付ごとにディレクトリを分けますが、1 日 1 本の前提は置きません。近いタイミングで繰り返し実行する前提のため、生成時は既存記事と重複しないトピックや新しい進展を選びます。同名ディレクトリがすでにある場合は、既存ディレクトリを上書きせず、末尾に連番を付けます。トピック、出力先、モデルなどはコマンド実行時に指定せず、必要な方針は `PROMPT.md` と `config/` 以下に記述します。
 
@@ -154,14 +155,13 @@ entrypoint は `PROMPT.md` をそのまま Codex CLI に渡します。Codex CLI
 `action.yml` は次の処理を行います。
 
 - `Dockerfile` を使って `node:24-bookworm-slim` ベースの action image を build する
-- image 内に Codex CLI と、`bash`、`bubblewrap`、`ca-certificates`、`file`、`git`、`imagemagick`、`ripgrep`、`tzdata`、`webp` を用意する
+- image 内に Codex CLI と、`bash`、`ca-certificates`、`file`、`git`、`imagemagick`、`ripgrep`、`tzdata`、`webp` を用意する
 - 必須の `openai-api-key` input を `OPENAI_API_KEY` として Codex CLI に渡す
 - `/opt/article-generator` にある `PROMPT.md` と entrypoint で、`/github/workspace` の `config/` と `articles/` を参照し、`draft/` を生成・検証して `articles/YYYY-MM-DD/<slug>/` に配置する
 - commit / push は行わず、利用側 workflow の後続 step に委ねる
 
 追加パッケージの役割は次の通りです。
 
-- `bubblewrap`: Codex CLI の Linux sandbox 用
 - `git`: Codex CLI によるリポジトリ判定と状態確認用
 - `ripgrep`: `config/` と既存 `articles/` の高速探索用
 - `tzdata`: `timezone` input による日付生成の安定化用

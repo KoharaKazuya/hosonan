@@ -179,11 +179,11 @@ log_step "Draft directory: $(relative_path "$draft_dir")"
 log_step "Output date directory: $(relative_path "$date_dir")"
 log_step "Timezone: ${TZ:-system default}"
 log_step "Web search: live"
-log_step "Sandbox: workspace-write ($(relative_path "$draft_dir") only)"
+log_step "Codex working directory: $(relative_path "$draft_dir")"
 log_group_end
 
 log_group_start "Run Codex CLI"
-"$codex_bin" --search --sandbox workspace-write --ask-for-approval never exec --cd "$draft_dir" - < "$prompt_file" >&2
+"$codex_bin" --search --dangerously-bypass-approvals-and-sandbox exec --cd "$draft_dir" - < "$prompt_file" >&2
 log_group_end
 
 log_group_start "Validate generated files"
