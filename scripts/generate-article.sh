@@ -15,9 +15,39 @@ draft_dir="${repo_root}/draft"
 draft_index_file="${draft_dir}/index.md"
 draft_thumbnail_file="${draft_dir}/thumbnail.webp"
 
-log() {
-  printf '%s\n' "$*" >&2
+current_log_group=""
+
+log_group_start() {
+  local title="$1"
+
+  log_group_end
+
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    printf '::group::%s\n' "$title" >&2
+  else
+    printf '\n== %s ==\n' "$title" >&2
+  fi
+
+  current_log_group="$title"
 }
+
+log_group_end() {
+  if [[ -z "$current_log_group" ]]; then
+    return
+  fi
+
+  if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+    printf '::endgroup::\n' >&2
+  fi
+
+  current_log_group=""
+}
+
+log_step() {
+  printf -- '-- %s\n' "$*" >&2
+}
+
+trap log_group_end EXIT
 
 relative_path() {
   local path="$1"
@@ -27,6 +57,32 @@ relative_path() {
   else
     printf '%s' "$path"
   fi
+}
+
+front_matter_value() {
+  local key="$1"
+  local file="$2"
+
+  awk -v key="$key" '
+    NR == 1 && $0 == "---" {
+      in_front_matter = 1
+      next
+    }
+    in_front_matter && $0 == "---" {
+      exit
+    }
+    in_front_matter && index($0, key ":") == 1 {
+      value = substr($0, length(key) + 2)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      gsub(/^"|"$/, "", value)
+      quote = sprintf("%c", 39)
+      if (substr(value, 1, 1) == quote && substr(value, length(value), 1) == quote) {
+        value = substr(value, 2, length(value) - 2)
+      }
+      print value
+      exit
+    }
+  ' "$file"
 }
 
 available_output_dir() {
@@ -68,6 +124,8 @@ image_dimensions() {
   return 1
 }
 
+log_group_start "Prepare workspace"
+
 if [[ -e "$draft_dir" ]]; then
   if [[ ! -d "$draft_dir" ]]; then
     echo "error: draft exists but is not a directory: $(relative_path "$draft_dir")" >&2
@@ -84,32 +142,41 @@ fi
 
 mkdir -p "$date_dir"
 
-log "prompt: $(relative_path "$prompt_file")"
-log "config directory: config/"
-log "draft directory: $(relative_path "$draft_dir")"
-log "output date directory: $(relative_path "$date_dir")"
-log "web search: live"
-log "sandbox: workspace-write ($(relative_path "$draft_dir") only)"
-log "running codex"
+log_step "Prompt: $(relative_path "$prompt_file")"
+log_step "Config directory: config/"
+log_step "Draft directory: $(relative_path "$draft_dir")"
+log_step "Output date directory: $(relative_path "$date_dir")"
+log_step "Web search: live"
+log_step "Sandbox: workspace-write ($(relative_path "$draft_dir") only)"
+log_group_end
 
-codex --search --sandbox workspace-write --ask-for-approval never exec --cd "$draft_dir" - < "$prompt_file" > /dev/null
+log_group_start "Run Codex CLI"
+codex --search --sandbox workspace-write --ask-for-approval never exec --cd "$draft_dir" - < "$prompt_file" >&2
+log_group_end
+
+log_group_start "Validate generated files"
+log_step "Checking generated article file"
 
 if [[ ! -f "$draft_index_file" ]]; then
   echo "error: generated draft is missing index.md" >&2
   exit 1
 fi
 
+log_step "Checking generated thumbnail file"
+
 if [[ ! -f "$draft_thumbnail_file" ]]; then
   echo "error: generated draft is missing thumbnail.webp" >&2
   exit 1
 fi
 
+log_step "Checking thumbnail MIME type"
 thumbnail_type="$(file --brief --mime-type "$draft_thumbnail_file")"
 if [[ "$thumbnail_type" != "image/webp" ]]; then
   echo "error: generated thumbnail is not WebP: $thumbnail_type" >&2
   exit 1
 fi
 
+log_step "Checking thumbnail dimensions"
 thumbnail_dimensions="$(image_dimensions "$draft_thumbnail_file" || true)"
 if [[ -z "$thumbnail_dimensions" ]]; then
   echo "error: could not validate thumbnail dimensions; install sips or ImageMagick" >&2
@@ -121,8 +188,18 @@ if [[ "$thumbnail_width" != "1200" || "$thumbnail_height" != "630" ]]; then
   echo "error: invalid thumbnail dimensions: ${thumbnail_width:-unknown}x${thumbnail_height:-unknown} (expected 1200x630)" >&2
   exit 1
 fi
+log_group_end
 
-slug="$(awk -F: '/^slug:[[:space:]]*/ { gsub(/^[[:space:]]+|[[:space:]]+$/, "", $2); print $2; exit }' "$draft_index_file")"
+log_group_start "Read article metadata"
+log_step "Reading title"
+title="$(front_matter_value "title" "$draft_index_file")"
+if [[ -z "$title" ]]; then
+  echo "error: generated article is missing title metadata" >&2
+  exit 1
+fi
+
+log_step "Reading slug"
+slug="$(front_matter_value "slug" "$draft_index_file")"
 if [[ ! "$slug" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
   if [[ -z "$slug" ]]; then
     echo "error: generated article is missing slug metadata" >&2
@@ -131,8 +208,25 @@ if [[ ! "$slug" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
   fi
   exit 1
 fi
+log_group_end
 
+log_group_start "Move article to output directory"
 output_dir="$(available_output_dir "$slug")"
+log_step "Moving draft to $(relative_path "$output_dir")"
 mv "$draft_dir" "$output_dir"
+output_directory="$(relative_path "$output_dir")"
+log_group_end
 
-echo "generated: $(relative_path "$output_dir")"
+log_group_start "Result"
+
+if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
+  {
+    printf 'title=%s\n' "$title"
+    printf 'directory=%s\n' "$output_directory"
+  } >> "$GITHUB_OUTPUT"
+fi
+
+printf 'title: %s\n' "$title"
+printf 'directory: %s\n' "$output_directory"
+
+log_group_end
