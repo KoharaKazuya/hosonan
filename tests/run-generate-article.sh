@@ -38,10 +38,6 @@ create_mock_codex() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "${1:-}" == "login" && "${2:-}" == "status" ]]; then
-  exit "${MOCK_LOGIN_STATUS:-0}"
-fi
-
 cd_dir=""
 previous=""
 for arg in "$@"; do
@@ -97,24 +93,13 @@ run_runner() {
   MAKE_WEBP="${test_root}/make-webp" \
   ARTICLE_REPO_ROOT="$fixture" \
   ARTICLE_GENERATOR_ROOT="$repo_root" \
+  OPENAI_API_KEY=test-key \
   TZ=UTC \
   "$@" \
-  "$repo_root/scripts/run-generate-article.sh"
+  "$repo_root/entrypoint.sh"
 }
 
-run_template_wrapper() {
-  local fixture="$1"
-  shift
-
-  PATH="${test_root}/bin:${PATH}" \
-  MAKE_WEBP="${test_root}/make-webp" \
-  ARTICLE_GENERATOR_ROOT="$repo_root" \
-  TZ=UTC \
-  "$@" \
-  "${fixture}/scripts/generate-article.sh"
-}
-
-run_entrypoint() {
+run_action_entrypoint() {
   local fixture="$1"
   shift
 
@@ -170,9 +155,6 @@ chmod +x "${test_root}/make-webp"
 create_mock_codex "${test_root}/bin"
 
 bash -n "${repo_root}/entrypoint.sh"
-bash -n "${repo_root}/scripts/run-generate-article.sh"
-bash -n "${repo_root}/scripts/generate-article.sh"
-bash -n "${repo_root}/templates/user-repo/scripts/generate-article.sh"
 bash -n "${repo_root}/tests/run-generate-article.sh"
 printf 'ok: shell scripts parse successfully\n'
 
@@ -187,7 +169,8 @@ grep -q '^FROM node:24-bookworm-slim$' "${repo_root}/Dockerfile"
 grep -q '^RUN npm install -g @openai/codex@latest$' "${repo_root}/Dockerfile"
 ! grep -q '^[[:space:]]*git \\' "${repo_root}/Dockerfile"
 grep -q '^COPY PROMPT\.md /opt/article-generator/PROMPT\.md$' "${repo_root}/Dockerfile"
-grep -q '^COPY scripts/run-generate-article\.sh /opt/article-generator/scripts/run-generate-article\.sh$' "${repo_root}/Dockerfile"
+grep -q '^COPY entrypoint\.sh /opt/article-generator/entrypoint\.sh$' "${repo_root}/Dockerfile"
+grep -q '^ENTRYPOINT \["/opt/article-generator/entrypoint\.sh"\]$' "${repo_root}/Dockerfile"
 grep -q 'uses: <owner>/<action-repo>@v1' "${repo_root}/templates/user-repo/.github/workflows/generate-article.yml"
 grep -q 'Commit generated article' "${repo_root}/templates/user-repo/.github/workflows/generate-article.yml"
 printf 'ok: Docker action interface and image definition are configured\n'
@@ -220,24 +203,21 @@ fixture="${test_root}/wrong-size"
 create_fixture_repo "$fixture"
 assert_failure "rejects a thumbnail with the wrong dimensions" run_runner "$fixture" env MOCK_THUMBNAIL=wrong-size
 
-fixture="${test_root}/local-login-ok"
+fixture="${test_root}/runner-missing-key"
 create_fixture_repo "$fixture"
-mkdir -p "${fixture}/scripts"
-cp "${repo_root}/templates/user-repo/scripts/generate-article.sh" "${fixture}/scripts/generate-article.sh"
-chmod +x "${fixture}/scripts/generate-article.sh"
-assert_success "local wrapper runs when codex login status succeeds" run_template_wrapper "$fixture" env
-
-fixture="${test_root}/local-login-fail"
-create_fixture_repo "$fixture"
-mkdir -p "${fixture}/scripts"
-cp "${repo_root}/templates/user-repo/scripts/generate-article.sh" "${fixture}/scripts/generate-article.sh"
-chmod +x "${fixture}/scripts/generate-article.sh"
-assert_failure "local wrapper stops when codex login status fails" run_template_wrapper "$fixture" env MOCK_LOGIN_STATUS=1
+assert_failure "runner requires OPENAI_API_KEY" env \
+  PATH="${test_root}/bin:${PATH}" \
+  MAKE_WEBP="${test_root}/make-webp" \
+  ARTICLE_REPO_ROOT="$fixture" \
+  ARTICLE_GENERATOR_ROOT="$repo_root" \
+  OPENAI_API_KEY= \
+  TZ=UTC \
+  "$repo_root/entrypoint.sh"
 
 fixture="${test_root}/entrypoint-valid"
 create_git_fixture_repo "$fixture"
 before_head="$(git -C "$fixture" rev-parse HEAD)"
-assert_success "entrypoint runs the generator without committing article changes" run_entrypoint "$fixture" env INPUT_OPENAI_API_KEY=test-key
+assert_success "action entrypoint runs the generator without committing article changes" run_action_entrypoint "$fixture" env INPUT_OPENAI_API_KEY=test-key
 test -f "${fixture}/articles/$(TZ=UTC date +%F)/mock-article/index.md"
 after_head="$(git -C "$fixture" rev-parse HEAD)"
 test "$before_head" = "$after_head"
@@ -245,4 +225,4 @@ test -n "$(git -C "$fixture" status --porcelain -- articles)"
 
 fixture="${test_root}/entrypoint-missing-key"
 create_git_fixture_repo "$fixture"
-assert_failure "entrypoint requires the OpenAI API key input" run_entrypoint "$fixture" env
+assert_failure "action entrypoint requires an OpenAI API key" run_action_entrypoint "$fixture" env OPENAI_API_KEY=

@@ -13,9 +13,8 @@ RUN npm install -g @openai/codex@latest
 WORKDIR /opt/article-generator
 
 COPY PROMPT.md /opt/article-generator/PROMPT.md
-COPY scripts/run-generate-article.sh /opt/article-generator/scripts/run-generate-article.sh
-COPY entrypoint.sh /entrypoint.sh
+COPY entrypoint.sh /opt/article-generator/entrypoint.sh
 
-RUN chmod +x /opt/article-generator/scripts/run-generate-article.sh /entrypoint.sh
+RUN chmod +x /opt/article-generator/entrypoint.sh
 
-ENTRYPOINT ["/entrypoint.sh"]
+ENTRYPOINT ["/opt/article-generator/entrypoint.sh"]

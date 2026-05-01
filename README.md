@@ -59,22 +59,7 @@ jobs:
 
 利用側リポジトリには `OPENAI_API_KEY` secret を設定してください。action 内では `openai-api-key` input として受け取り、Codex CLI の実行に使います。この Docker container action は `articles/` 以下にファイルを出力するところまでを担当します。生成された差分の commit / push は、利用側 workflow の後続 step で行ってください。
 
-利用側がこの Action リポジトリを指定する箇所は `uses: <owner>/<action-repo>@v1` の 1 箇所だけです。GitHub Actions はこのリポジトリの `Dockerfile` を build し、`node:24-bookworm-slim` ベースの container 内で Codex CLI と共通 runner を実行します。
-
-### ローカル実行
-
-ローカル実行では API key を要求せず、事前に `codex login` 済みであることを前提にします。
-
-```console
-$ codex login
-$ scripts/generate-article.sh
-```
-
-利用側リポジトリに置く薄い wrapper の例は `templates/user-repo/scripts/generate-article.sh` にあります。別リポジトリから使う場合は、`ARTICLE_GENERATOR_ROOT` にこの Action リポジトリの clone 先を指定してください。
-
-```console
-$ ARTICLE_GENERATOR_ROOT=/path/to/article-generator scripts/generate-article.sh
-```
+利用側がこの Action リポジトリを指定する箇所は `uses: <owner>/<action-repo>@v1` の 1 箇所だけです。GitHub Actions はこのリポジトリの `Dockerfile` を build し、`node:24-bookworm-slim` ベースの container 内で Codex CLI と entrypoint を実行します。
 
 ## アーキテクチャ案
 
@@ -121,9 +106,6 @@ $ ARTICLE_GENERATOR_ROOT=/path/to/article-generator scripts/generate-article.sh
 ├── Dockerfile                      # GitHub Actions が build する action image
 ├── entrypoint.sh                   # container action の entrypoint
 ├── PROMPT.md                       # Action repo 管理の生成プロンプト
-├── scripts/
-│   ├── generate-article.sh         # この repo を直接使うローカル wrapper
-│   └── run-generate-article.sh     # 共通 runner
 ├── templates/user-repo/            # 利用側 repo に置く最小ファイル例
 └── tests/
     └── run-generate-article.sh
@@ -131,11 +113,7 @@ $ ARTICLE_GENERATOR_ROOT=/path/to/article-generator scripts/generate-article.sh
 
 ## Codex CLI の前提
 
-Codex CLI をインストールし、ログイン済みであることを前提にします。
-
-```console
-$ codex login
-```
+Action image 内に Codex CLI をインストールし、`OPENAI_API_KEY` を使って実行します。
 
 記事生成に必要なシステム上の制約は、この Action リポジトリのルート直下の 1 ファイルで管理します。
 
@@ -148,9 +126,9 @@ $ codex login
 
 実行時は Action リポジトリの `PROMPT.md` と、利用側リポジトリの `config/` 以下の設定をあわせて参照します。記事フォーマット、読者像、関心、避けたい内容などは、用途に合わせて `config/` 以下の任意のファイルに記述します。v1 では `PROMPT.md` の差し替えインターフェイスは提供しません。
 
-記事生成は、定型作業をまとめたスクリプトを引数なしで実行します。このリポジトリでは、それ以外の生成方法は想定しません。
+記事生成は、Docker container action の entrypoint を引数なしで実行します。このリポジトリでは、それ以外の生成方法は想定しません。
 
-共通 runner は次の処理を 1 回のコマンドで行います。
+entrypoint は次の処理を 1 回のコマンドで行います。
 
 - 空の `draft/` ディレクトリの作成
 - Action リポジトリの `PROMPT.md` の Codex CLI への標準入力渡し
@@ -161,17 +139,13 @@ $ codex login
 - `articles/YYYY-MM-DD/` ディレクトリの作成
 - 生成された記事のトピックに基づく `articles/YYYY-MM-DD/<topic-slug>/` への `draft/` のリネーム
 
-```console
-$ scripts/generate-article.sh
-```
-
-共通 runner は `PROMPT.md` をそのまま Codex CLI に渡します。Codex CLI は `draft/` を作業ディレクトリとして起動され、`PROMPT.md` の指示に従って `../config/` 以下の設定ファイルと既存の `../articles/**/*.md`、`../articles/**/index.md` を参照します。1 回の実行で 1 本の記事を生成します。
+entrypoint は `PROMPT.md` をそのまま Codex CLI に渡します。Codex CLI は `draft/` を作業ディレクトリとして起動され、`PROMPT.md` の指示に従って `../config/` 以下の設定ファイルと既存の `../articles/**/*.md`、`../articles/**/index.md` を参照します。1 回の実行で 1 本の記事を生成します。
 
 出力先は `articles/YYYY-MM-DD/<topic-slug>/index.md` と `articles/YYYY-MM-DD/<topic-slug>/thumbnail.webp` です。サムネイル画像は 1200x630px の WebP 画像として生成します。記事にその他の添付ファイルがある場合は、同じ記事ディレクトリ内に配置されます。日付ごとにディレクトリを分けますが、1 日 1 本の前提は置きません。近いタイミングで繰り返し実行する前提のため、生成時は既存記事と重複しないトピックや新しい進展を選びます。同名ディレクトリがすでにある場合は、既存ディレクトリを上書きせず、末尾に連番を付けます。トピック、出力先、モデルなどはコマンド実行時に指定せず、必要な方針は `PROMPT.md` と `config/` 以下に記述します。
 
 生成開始時に `draft/` が空でない場合、スクリプトは既存内容を上書きせずに停止します。失敗した生成物を確認するか削除してから再実行してください。
 
-日付ディレクトリは実行環境のタイムゾーンで決まります。GitHub Actions では action の `timezone` input を使います。ローカルでは必要に応じて、コマンド実行時に `TZ` または `ARTICLE_TIMEZONE` 環境変数を設定してください。
+日付ディレクトリは action の `timezone` input で決まります。
 
 ## GitHub Action の処理
 
@@ -179,33 +153,19 @@ $ scripts/generate-article.sh
 
 - `Dockerfile` を使って `node:24-bookworm-slim` ベースの action image を build する
 - image 内に Codex CLI と、`bash`、`ca-certificates`、`file`、`imagemagick` を用意する
-- `openai-api-key` input が空でないことを確認する
-- `/opt/article-generator` にある `PROMPT.md` と共通 runner で、`/github/workspace` の `config/` と `articles/` を参照し、`draft/` を生成・検証して `articles/YYYY-MM-DD/<slug>/` に配置する
+- `openai-api-key` input が空でないことを確認し、`OPENAI_API_KEY` として Codex CLI に渡す
+- `/opt/article-generator` にある `PROMPT.md` と entrypoint で、`/github/workspace` の `config/` と `articles/` を参照し、`draft/` を生成・検証して `articles/YYYY-MM-DD/<slug>/` に配置する
 - commit / push は行わず、利用側 workflow の後続 step に委ねる
 
 ## テスト
 
-共通 runner は mock Codex で検証できます。
+entrypoint は mock Codex で検証できます。
 
 ```console
 $ tests/run-generate-article.sh
 ```
 
-このテストは、Docker action 定義、Dockerfile の主要設定、workflow テンプレート、正常生成、slug 衝突時の連番、slug 不正、サムネイル不足、MIME 不一致、サイズ不一致、ローカル wrapper のログイン確認、entrypoint の API key 検証と非 commit 動作を確認します。
-
-## 設定例
-
-Web 検索やネットワークアクセスを継続的に使う場合は、`~/.codex/config.toml` で明示します。
-
-```toml
-[features]
-web_search_request = true
-
-[sandbox_workspace_write]
-network_access = true
-```
-
-実行環境やセキュリティ要件に応じて、必要最小限の権限で運用してください。
+このテストは、Docker action 定義、Dockerfile の主要設定、workflow テンプレート、正常生成、slug 衝突時の連番、slug 不正、サムネイル不足、MIME 不一致、サイズ不一致、API key 検証と非 commit 動作を確認します。
 
 ## 記事生成時の方針
 
