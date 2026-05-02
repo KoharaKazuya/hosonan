@@ -5,7 +5,7 @@ import type { Env } from "../src/types";
 class MockR2Bucket {
   gets: string[] = [];
 
-  constructor(private readonly objects: Map<string, string> = new Map()) {}
+  constructor(private readonly objects: Map<string, string | string[]> = new Map()) {}
 
   async get(key: string): Promise<R2ObjectBody | null> {
     this.gets.push(key);
@@ -15,7 +15,7 @@ class MockR2Bucket {
     }
 
     return {
-      text: async () => value
+      body: streamFromChunks(Array.isArray(value) ? value : [value])
     } as R2ObjectBody;
   }
 }
@@ -34,7 +34,7 @@ class MockCache {
   }
 }
 
-function env(bucket: MockR2Bucket): Env {
+function env(bucket: { get(key: string): Promise<R2ObjectBody | null> }): Env {
   return {
     ARTICLES_BUCKET: bucket as unknown as R2Bucket
   };
@@ -42,6 +42,19 @@ function env(bucket: MockR2Bucket): Env {
 
 function request(path: string, method = "GET"): Request {
   return new Request(`https://articles.example${path}`, { method });
+}
+
+function streamFromChunks(chunks: string[]): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+
+  return new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const chunk of chunks) {
+        controller.enqueue(encoder.encode(chunk));
+      }
+      controller.close();
+    }
+  });
 }
 
 describe("site worker", () => {
@@ -61,6 +74,17 @@ describe("site worker", () => {
     expect(response.headers.get("cache-control")).toBe("public, max-age=300");
     await expect(response.text()).resolves.toContain("<!doctype html>");
     expect(bucket.gets).toEqual(["gh/octo/2026-05-02/example/index.html"]);
+  });
+
+  it("streams prefix, chunked R2 body, and suffix in order", async () => {
+    const bucket = new MockR2Bucket(
+      new Map([["gh/octo/2026-05-02/example/index.html", ["<h1>Hel", "lo</h1>", "<p>body</p>"]]])
+    );
+    const response = await worker.fetch(request("/gh/octo/2026-05-02/example/"), env(bucket));
+
+    await expect(response.text()).resolves.toMatch(
+      /<main class="article">\n<h1>Hello<\/h1><p>body<\/p>\n<\/main>/
+    );
   });
 
   it("normalizes directory and index URLs to the same R2 key and cache key", async () => {
@@ -93,6 +117,19 @@ describe("site worker", () => {
 
     expect(response.status).toBe(404);
     await expect(response.text()).resolves.toBe("not found\n");
+  });
+
+  it("returns 500 when the R2 object has no readable body", async () => {
+    const bucket = {
+      async get() {
+        return {} as R2ObjectBody;
+      }
+    };
+
+    const response = await worker.fetch(request("/gh/octo/2026-05-02/example/"), env(bucket));
+
+    expect(response.status).toBe(500);
+    await expect(response.text()).resolves.toBe("article body unavailable\n");
   });
 
   it("returns 405 for unsupported methods", async () => {

@@ -3,7 +3,7 @@ import type { Env } from "./types";
 
 const CACHE_TTL_SECONDS = 300;
 
-export function buildHtmlDocument(article: ServedArticlePath, bodyFragment: string): string {
+export function buildHtmlDocumentPrefix(article: ServedArticlePath): string {
   const title = escapeHtml(`${article.owner}/${article.slug}`);
 
   return `<!doctype html>
@@ -24,7 +24,11 @@ body{margin:0}
 </head>
 <body>
 <main class="article">
-${bodyFragment}
+`;
+}
+
+export function buildHtmlDocumentSuffix(): string {
+  return `
 </main>
 </body>
 </html>`;
@@ -64,8 +68,11 @@ export default {
       return textResponse("not found\n", 404, request.method);
     }
 
-    const document = buildHtmlDocument(article, await object.text());
-    const response = new Response(document, {
+    if (!object.body) {
+      return textResponse("article body unavailable\n", 500, request.method);
+    }
+
+    const response = new Response(buildHtmlDocumentStream(article, object.body), {
       headers: {
         "Cache-Control": `public, max-age=${CACHE_TTL_SECONDS}`,
         "Content-Type": "text/html; charset=utf-8"
@@ -76,6 +83,37 @@ export default {
     return responseForMethod(response, request.method);
   }
 };
+
+function buildHtmlDocumentStream(article: ServedArticlePath, body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
+  const encoder = new TextEncoder();
+  const reader = body.getReader();
+
+  return new ReadableStream<Uint8Array>({
+    async start(controller) {
+      controller.enqueue(encoder.encode(buildHtmlDocumentPrefix(article)));
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) {
+            break;
+          }
+          controller.enqueue(value);
+        }
+
+        controller.enqueue(encoder.encode(buildHtmlDocumentSuffix()));
+        controller.close();
+      } catch (error) {
+        controller.error(error);
+      } finally {
+        reader.releaseLock();
+      }
+    },
+    cancel(reason) {
+      return reader.cancel(reason);
+    }
+  });
+}
 
 function textResponse(body: string, status: number, method: string): Response {
   const response = new Response(body, {
