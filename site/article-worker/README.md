@@ -71,8 +71,8 @@ Worker には次が必要です。
 
 ```console
 $ npm install
-$ npm run build --workspace @ai-generated-articles/article-worker
-$ npm test --workspace @ai-generated-articles/article-worker
+$ npm run build --workspace @hosonan/article-worker
+$ npm test --workspace @hosonan/article-worker
 ```
 
 `npm run build` は TypeScript の型チェックを行います。`npm test` は Markdown 変換と webhook 分岐を検証します。

@@ -51,6 +51,6 @@ $ npm test --workspaces
 この package だけを検証する場合は次を使います。
 
 ```console
-$ npm run build --workspace @ai-generated-articles/site-worker
-$ npm test --workspace @ai-generated-articles/site-worker
+$ npm run build --workspace @hosonan/site-worker
+$ npm test --workspace @hosonan/site-worker
 ```

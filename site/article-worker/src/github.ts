@@ -126,7 +126,7 @@ export async function createInstallationAccessToken(env: Env, installationId: nu
     headers: {
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${jwt}`,
-      "User-Agent": "ai-generated-articles-worker",
+      "User-Agent": "hosonan-worker",
       "X-GitHub-Api-Version": "2022-11-28"
     }
   });
@@ -157,7 +157,7 @@ export async function fetchMarkdownAtCommit(
     headers: {
       Accept: "application/vnd.github.raw",
       Authorization: `Bearer ${token}`,
-      "User-Agent": "ai-generated-articles-worker",
+      "User-Agent": "hosonan-worker",
       "X-GitHub-Api-Version": "2022-11-28"
     }
   });

@@ -14,11 +14,11 @@ RUN apt-get update \
 
 RUN npm install -g @openai/codex@latest
 
-WORKDIR /opt/article-generator
+WORKDIR /opt/hosonan
 
-COPY PROMPT.md /opt/article-generator/PROMPT.md
-COPY entrypoint.sh /opt/article-generator/entrypoint.sh
+COPY PROMPT.md /opt/hosonan/PROMPT.md
+COPY entrypoint.sh /opt/hosonan/entrypoint.sh
 
-RUN chmod +x /opt/article-generator/entrypoint.sh
+RUN chmod +x /opt/hosonan/entrypoint.sh
 
-ENTRYPOINT ["/opt/article-generator/entrypoint.sh"]
+ENTRYPOINT ["/opt/hosonan/entrypoint.sh"]

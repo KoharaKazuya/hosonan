@@ -1,4 +1,4 @@
-import { escapeHtml, parseServedArticlePath, type ServedArticlePath } from "@ai-generated-articles/site-shared";
+import { escapeHtml, parseServedArticlePath, type ServedArticlePath } from "@hosonan/site-shared";
 import type { Env } from "./types";
 
 const CACHE_TTL_SECONDS = 300;

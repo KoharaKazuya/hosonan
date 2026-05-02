@@ -57,13 +57,13 @@ jobs:
 手元で動作確認する場合は、このリポジトリのルートで Action image を build します。
 
 ```console
-$ docker build -t local/ai-generated-articles-codex:dev actions/codex
+$ docker build -t local/hosonan-codex:dev actions/codex
 ```
 
 次に、記事を生成したいリポジトリへ移動し、build 済みの image を起動します。
 
 ```console
-$ docker run --rm -it -v "$PWD:/github/workspace" -w /github/workspace --entrypoint=/bin/bash local/ai-generated-articles-codex:dev
+$ docker run --rm -it -v "$PWD:/github/workspace" -w /github/workspace --entrypoint=/bin/bash local/hosonan-codex:dev
 ```
 
 起動した container 内で Codex CLI にログインします。手動実行では `OPENAI_API_KEY` を必須にせず、Codex CLI の認証状態に委ねます。
@@ -75,7 +75,7 @@ $ codex login --device-auth
 ログイン後、container 内で entrypoint を実行します。
 
 ```console
-$ /opt/article-generator/entrypoint.sh
+$ /opt/hosonan/entrypoint.sh
 ```
 
 正常に完了すると、mount した記事リポジトリの `articles/` 以下に記事ディレクトリが生成されます。

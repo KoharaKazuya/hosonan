@@ -1,5 +1,5 @@
 {
-  "name": "@ai-generated-articles/site-worker",
+  "name": "@hosonan/site-worker",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -8,7 +8,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@ai-generated-articles/site-shared": "0.1.0"
+    "@hosonan/site-shared": "0.1.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260421.0",
