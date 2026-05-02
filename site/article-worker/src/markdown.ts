@@ -1,5 +1,4 @@
 import type { Element, Root } from "hast";
-import type { Root as MdastRoot } from "mdast";
 import rehypeHighlight from "rehype-highlight";
 import rehypeSanitize, { defaultSchema, type Options as SanitizeSchema } from "rehype-sanitize";
 import rehypeSlug from "rehype-slug";
@@ -11,13 +10,6 @@ import { unified } from "unified";
 import { visit } from "unist-util-visit";
 
 const FRONTMATTER_RE = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/;
-
-export class MarkdownConversionError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "MarkdownConversionError";
-  }
-}
 
 export function stripFrontmatter(markdown: string): string {
   return markdown.replace(FRONTMATTER_RE, "");
@@ -33,14 +25,6 @@ function removeUnsafeUrls() {
       if (typeof node.properties?.src === "string" && !isAllowedUrl(node.properties.src, ["https:"])) {
         delete node.properties.src;
       }
-    });
-  };
-}
-
-function failOnRawHtml() {
-  return (tree: MdastRoot) => {
-    visit(tree, "html", () => {
-      throw new MarkdownConversionError("Raw HTML is not supported in article Markdown.");
     });
   };
 }
@@ -116,7 +100,6 @@ export function convertMarkdownToHtmlFragment(markdown: string): string {
     unified()
       .use(remarkParse)
       .use(remarkGfm)
-      .use(failOnRawHtml)
       .use(remarkRehype)
       .use(rehypeSlug)
       .use(rehypeHighlight, { detect: false })

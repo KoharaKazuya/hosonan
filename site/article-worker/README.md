@@ -44,7 +44,7 @@ Markdown 変換は `unified` / `remark` / `rehype` 系のパイプラインで�
 
 heading `id` は GitHub 風に見出し文字列から生成し、同じ見出しが複数ある場合は `-1`, `-2` のように連番で衝突を避けます。
 
-raw HTML は許可しません。Markdown 内に HTML node が含まれる場合、変換は失敗し、R2 は更新されません。
+raw HTML は HTML としては許可しません。Markdown 内に HTML node が含まれる場合も変換は失敗させず、出力できる Markdown 部分を HTML 断片として保存します。
 
 ## Sanitizer と URL policy
 
