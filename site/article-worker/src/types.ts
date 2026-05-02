@@ -1,3 +1,5 @@
+import type { ArticlePath } from "@ai-generated-articles/site-shared";
+
 export interface Env {
   GITHUB_APP_ID: string;
   GITHUB_PRIVATE_KEY: string;
@@ -25,8 +27,4 @@ export interface GitHubPushPayload {
   }>;
 }
 
-export interface ArticlePath {
-  date: string;
-  slug: string;
-  path: string;
-}
+export type { ArticlePath };

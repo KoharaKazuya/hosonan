@@ -1,24 +1,14 @@
+import { buildArticleR2Key, matchArticleMarkdownPath } from "@ai-generated-articles/site-shared";
 import { convertMarkdownToHtmlFragment } from "./markdown";
 import { createInstallationAccessToken, fetchMarkdownAtCommit, verifyGitHubSignature } from "./github";
 import type { ArticlePath, Env, GitHubPushPayload } from "./types";
 
-const ARTICLE_INDEX_RE = /^articles\/(\d{4}-\d{2}-\d{2})\/([^/]+)\/index\.md$/;
-
 export function matchArticlePath(path: string): ArticlePath | null {
-  const match = ARTICLE_INDEX_RE.exec(path);
-  if (!match) {
-    return null;
-  }
-
-  return {
-    date: match[1],
-    slug: match[2],
-    path
-  };
+  return matchArticleMarkdownPath(path);
 }
 
 export function r2Key(ownerLogin: string, article: ArticlePath): string {
-  return `gh/${ownerLogin}/${article.date}/${article.slug}/index.html`;
+  return buildArticleR2Key(ownerLogin, article);
 }
 
 async function handlePush(payload: GitHubPushPayload, env: Env): Promise<Response> {

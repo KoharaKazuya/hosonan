@@ -1,4 +1,4 @@
-name = "ai-generated-articles-worker"
+name = "ai-generated-articles-article-worker"
 main = "src/worker.ts"
 compatibility_date = "2026-05-02"
 

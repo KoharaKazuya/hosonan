@@ -1,6 +1,6 @@
-# site/worker
+# site/article-worker
 
-`site/worker` は、GitHub App webhook で記事 Markdown の push を受け取り、HTML 断片へ変換して Cloudflare R2 に保存する Cloudflare Workers プロジェクトです。
+`site/article-worker` は、GitHub App webhook で記事 Markdown の push を受け取り、HTML 断片へ変換して Cloudflare R2 に保存する Cloudflare Workers プロジェクトです。
 
 記事生成を担当する `actions/codex/` とは独立しています。対象は、生成済みの `articles/YYYY-MM-DD/<slug>/index.md` だけです。
 
@@ -71,8 +71,8 @@ Worker には次が必要です。
 
 ```console
 $ npm install
-$ npm run build
-$ npm test
+$ npm run build --workspace @ai-generated-articles/article-worker
+$ npm test --workspace @ai-generated-articles/article-worker
 ```
 
 `npm run build` は TypeScript の型チェックを行います。`npm test` は Markdown 変換と webhook 分岐を検証します。
