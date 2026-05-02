@@ -6,7 +6,8 @@
   "r2_buckets": [
     {
       "binding": "ARTICLES_BUCKET",
-      "bucket_name": "hosonan"
-    }
-  ]
+      "bucket_name": "hosonan-articles",
+      "remote": true,
+    },
+  ],
 }
