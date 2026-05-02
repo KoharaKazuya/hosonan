@@ -180,7 +180,7 @@ grep -q '^[[:space:]]*webp \\$' "${repo_root}/Dockerfile"
 grep -q '^COPY PROMPT\.md /opt/article-generator/PROMPT\.md$' "${repo_root}/Dockerfile"
 grep -q '^COPY entrypoint\.sh /opt/article-generator/entrypoint\.sh$' "${repo_root}/Dockerfile"
 grep -q '^ENTRYPOINT \["/opt/article-generator/entrypoint\.sh"\]$' "${repo_root}/Dockerfile"
-grep -q 'uses: <owner>/<action-repo>@v1' "${repo_root}/templates/user-repo/.github/workflows/generate-article.yml"
+grep -q 'uses: <owner>/<repo>/actions/codex@v1' "${repo_root}/templates/user-repo/.github/workflows/generate-article.yml"
 grep -q 'Commit generated article' "${repo_root}/templates/user-repo/.github/workflows/generate-article.yml"
 printf 'ok: Docker action interface and image definition are configured\n'
 
