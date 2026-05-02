@@ -65,7 +65,7 @@ Worker には次が必要です。
 - `WEBHOOK_SECRET`: GitHub webhook secret
 - `ARTICLES_BUCKET`: R2 bucket binding
 
-`wrangler.toml` には `ARTICLES_BUCKET` binding の雛形だけを置いています。実際の bucket 名は利用環境に合わせて設定してください。
+`wrangler.jsonc` には `ARTICLES_BUCKET` binding の雛形だけを置いています。実際の bucket 名は利用環境に合わせて設定してください。
 
 ## テスト
 

@@ -1,7 +1,0 @@
-name = "hosonan-site-worker"
-main = "src/worker.ts"
-compatibility_date = "2026-05-02"
-
-[[r2_buckets]]
-binding = "ARTICLES_BUCKET"
-bucket_name = "hosonan"
