@@ -1,14 +1,11 @@
 {
-  "name": "@hosonan/site-worker",
+  "name": "@hosonan/router",
   "version": "0.1.0",
   "private": true,
   "type": "module",
   "scripts": {
     "build": "tsc --noEmit",
     "test": "vitest run"
-  },
-  "dependencies": {
-    "@hosonan/site-shared": "0.1.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20260421.0",

@@ -1,4 +1,4 @@
-import { buildArticleR2Key, matchArticleMarkdownPath } from "@hosonan/site-shared";
+import { buildArticleR2Key, matchArticleMarkdownPath } from "@hosonan/shared";
 import { convertMarkdownToHtmlFragment } from "./markdown";
 import { createInstallationAccessToken, fetchMarkdownAtCommit, verifyGitHubSignature } from "./github";
 import type { ArticlePath, Env, GitHubPushPayload } from "./types";

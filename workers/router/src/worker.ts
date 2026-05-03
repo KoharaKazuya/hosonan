@@ -7,7 +7,7 @@ export default {
     const { pathname } = new URL(request.url);
 
     if (GITHUB_WEBHOOK_PATHS.has(pathname)) {
-      return env.ARTICLE_WORKER.fetch(request);
+      return env.GITHUB_WEBHOOK.fetch(request);
     }
 
     if (pathname === "/api" || pathname.startsWith("/api/")) {
@@ -17,6 +17,6 @@ export default {
       });
     }
 
-    return env.SITE_WORKER.fetch(request);
+    return env.WEB.fetch(request);
   }
 };

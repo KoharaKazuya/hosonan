@@ -1,6 +1,6 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
-  "name": "hosonan-article-worker",
+  "name": "hosonan-github-webhook",
   "main": "src/worker.ts",
   "compatibility_date": "2026-05-02",
   "workers_dev": false,

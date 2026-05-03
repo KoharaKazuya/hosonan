@@ -1,6 +1,6 @@
-# site/site-worker
+# workers/web
 
-`site/site-worker` は、Cloudflare R2 に保存された記事本文 HTML 断片を、最小限の HTML document に組み込んで配信する Cloudflare Workers プロジェクトです。
+`workers/web` は、`/api` 以外の Web リクエストを汎用的に受け、Cloudflare R2 に保存された記事本文 HTML 断片を最小限の HTML document に組み込んで配信する Cloudflare Workers プロジェクトです。
 
 ## URL
 
@@ -51,6 +51,6 @@ $ npm test --workspaces
 この package だけを検証する場合は次を使います。
 
 ```console
-$ npm run build --workspace @hosonan/site-worker
-$ npm test --workspace @hosonan/site-worker
+$ npm run build --workspace @hosonan/web
+$ npm test --workspace @hosonan/web
 ```

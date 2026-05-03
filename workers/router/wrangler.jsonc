@@ -1,17 +1,17 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
-  "name": "hosonan",
+  "name": "hosonan-router",
   "main": "src/worker.ts",
   "compatibility_date": "2026-05-02",
   "workers_dev": true,
   "services": [
     {
-      "binding": "SITE_WORKER",
-      "service": "hosonan-site-worker",
+      "binding": "WEB",
+      "service": "hosonan-web",
     },
     {
-      "binding": "ARTICLE_WORKER",
-      "service": "hosonan-article-worker",
+      "binding": "GITHUB_WEBHOOK",
+      "service": "hosonan-github-webhook",
     },
   ],
 }

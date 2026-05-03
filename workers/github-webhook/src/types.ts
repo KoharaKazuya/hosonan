@@ -1,4 +1,4 @@
-import type { ArticlePath } from "@hosonan/site-shared";
+import type { ArticlePath } from "@hosonan/shared";
 
 export interface Env {
   GITHUB_APP_ID: string;
