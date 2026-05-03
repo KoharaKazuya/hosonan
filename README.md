@@ -10,6 +10,8 @@
 .
 ├── README.md
 ├── package.json
+├── docs/
+│   └── github-backend-blog-system.md
 ├── actions/
 │   └── codex/
 │       ├── README.md
@@ -50,7 +52,21 @@
 
 `site/shared` は、記事 path、R2 key、配信用 URL 正規化、HTML escape など、両 Worker で使う純粋関数を提供します。
 
+現時点の Web サイト部分は、単一 repo 形状の `articles/YYYY-MM-DD/<slug>/index.md` を記事本文として変換・配信する最小実装です。
+
+実装済みの範囲は次のとおりです。
+
+- GitHub webhook の `push` event を受信し、署名を検証する。
+- GitHub App installation access token を使って対象 Markdown を GitHub Contents API から取得する。
+- front matter を除いた Markdown を HTML 断片へ変換し、Cloudflare R2 に保存する。
+- 削除された記事に対応する R2 object を削除する。
+- R2 に保存された HTML 断片を最小限の HTML document に組み込み、Cache API を使って配信する。
+
+現状では、multi-tenant registry、Queue による非同期同期、Durable Objects による repo 単位 coalescing、D1、asset proxy、記事一覧、RSS、画像配信、GitHub repo への HTML 書き戻しは実装していません。Markdown 画像も asset proxy URL へ変換されず、現在の sanitizer では出力 HTML に残りません。
+
 詳細、必要な secret / binding、R2 key 仕様、Markdown 対応範囲、テスト方法は [site/article-worker/README.md](site/article-worker/README.md) を参照してください。
+
+GitHub repository を記事の source of truth として Cloudflare 上で公開する最終的な想定は [docs/github-backend-blog-system.md](docs/github-backend-blog-system.md) にまとめています。
 
 全 workspace の検証は root から実行できます。
 
@@ -59,7 +75,5 @@ $ npm install
 $ npm run build --workspaces
 $ npm test --workspaces
 ```
-
-現時点の Web サイト部分は記事本文の変換と配信だけを扱います。記事一覧、RSS、画像配信、GitHub repo への HTML 書き戻しは対象外です。
 
 リポジトリルートの `README.md` は全体説明と各部分への導線に留め、実装ごとの詳細は各ディレクトリ配下のドキュメントへ分けます。
