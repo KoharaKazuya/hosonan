@@ -2,8 +2,20 @@
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "hosonan-router",
   "main": "src/worker.ts",
-  "compatibility_date": "2026-05-02",
+  "compatibility_date": "2026-05-03",
+  "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.01,
+    },
+  },
   "services": [
     {
       "binding": "WEB",
