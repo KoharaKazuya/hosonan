@@ -8,6 +8,8 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces",
-    "test": "npm test --workspaces"
+    "test": "npm test --workspaces",
+    "types": "npm run types --workspace @hosonan/router && npm run types --workspace @hosonan/web && npm run types --workspace @hosonan/github-webhook",
+    "types:check": "npm run types:check --workspace @hosonan/router && npm run types:check --workspace @hosonan/web && npm run types:check --workspace @hosonan/github-webhook"
   }
 }

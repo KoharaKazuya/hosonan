@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import worker from "../src/worker";
-import type { Env } from "../src/types";
 
 class MockService {
   readonly requests: Request[] = [];

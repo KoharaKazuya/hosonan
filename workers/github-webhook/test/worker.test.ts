@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/worker";
-import type { Env, GitHubPushPayload } from "../src/types";
+import type { GitHubPushPayload } from "../src/types";
 
 vi.mock("../src/github", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/github")>();

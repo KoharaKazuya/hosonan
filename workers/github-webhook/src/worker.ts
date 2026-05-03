@@ -1,7 +1,7 @@
 import { buildArticleR2Key, matchArticleMarkdownPath } from "@hosonan/shared";
 import { convertMarkdownToHtmlFragment } from "./markdown";
 import { createInstallationAccessToken, fetchMarkdownAtCommit, verifyGitHubSignature } from "./github";
-import type { ArticlePath, Env, GitHubPushPayload } from "./types";
+import type { ArticlePath, GitHubPushPayload } from "./types";
 
 export function matchArticlePath(path: string): ArticlePath | null {
   return matchArticleMarkdownPath(path);

@@ -1,12 +1,5 @@
 import type { ArticlePath } from "@hosonan/shared";
 
-export interface Env {
-  GITHUB_APP_ID: string;
-  GITHUB_PRIVATE_KEY: string;
-  WEBHOOK_SECRET: string;
-  ARTICLES_BUCKET: R2Bucket;
-}
-
 export interface GitHubPushPayload {
   ref?: string;
   repository: {

@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../src/worker";
-import type { Env } from "../src/types";
 
 class MockR2Bucket {
   gets: string[] = [];

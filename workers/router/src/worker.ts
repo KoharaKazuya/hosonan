@@ -1,5 +1,3 @@
-import type { Env } from "./types";
-
 const GITHUB_WEBHOOK_PATHS = new Set(["/api/github/webhook", "/api/github/webhook/"]);
 
 export default {

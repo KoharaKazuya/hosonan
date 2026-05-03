@@ -1,5 +1,3 @@
-import type { Env } from "./types";
-
 const textEncoder = new TextEncoder();
 
 function base64Url(bytes: ArrayBuffer | Uint8Array): string {

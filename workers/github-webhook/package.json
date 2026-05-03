@@ -4,7 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "tsc --noEmit",
+    "build": "npm run types:check && tsc --noEmit",
+    "types": "wrangler types worker-configuration.d.ts",
+    "types:check": "wrangler types worker-configuration.d.ts --check",
     "test": "vitest run"
   },
   "dependencies": {
@@ -20,9 +22,9 @@
     "unist-util-visit": "^5.0.0"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20260421.0",
     "@types/mdast": "^4.0.4",
     "@types/hast": "^3.0.4",
+    "@types/node": "^24.10.1",
     "typescript": "^5.9.3",
     "vitest": "^3.2.4",
     "wrangler": "^4.13.2"

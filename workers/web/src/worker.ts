@@ -1,5 +1,4 @@
 import { escapeHtml, parseServedArticlePath, type ServedArticlePath } from "@hosonan/shared";
-import type { Env } from "./types";
 
 const CACHE_TTL_SECONDS = 300;
 
