@@ -13,7 +13,7 @@ class MockService {
 }
 
 function request(path: string): Request {
-  return new Request(`https://hosonan-router.koharakazuya.workers.dev${path}`);
+  return new Request(`https://hosonan.koharakazuya.workers.dev${path}`);
 }
 
 function env(web = new MockService("web\n"), githubWebhook = new MockService("webhook\n")): Env {
