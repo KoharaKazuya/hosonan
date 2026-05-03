@@ -1,0 +1,22 @@
+import type { Env } from "./types";
+
+const GITHUB_WEBHOOK_PATHS = new Set(["/api/github/webhook", "/api/github/webhook/"]);
+
+export default {
+  fetch(request: Request, env: Env): Promise<Response> | Response {
+    const { pathname } = new URL(request.url);
+
+    if (GITHUB_WEBHOOK_PATHS.has(pathname)) {
+      return env.ARTICLE_WORKER.fetch(request);
+    }
+
+    if (pathname === "/api" || pathname.startsWith("/api/")) {
+      return new Response("not found\n", {
+        status: 404,
+        headers: { "Content-Type": "text/plain; charset=utf-8" }
+      });
+    }
+
+    return env.SITE_WORKER.fetch(request);
+  }
+};

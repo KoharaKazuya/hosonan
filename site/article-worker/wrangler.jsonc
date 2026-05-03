@@ -3,6 +3,7 @@
   "name": "hosonan-article-worker",
   "main": "src/worker.ts",
   "compatibility_date": "2026-05-02",
+  "workers_dev": false,
   "r2_buckets": [
     {
       "binding": "ARTICLES_BUCKET",
