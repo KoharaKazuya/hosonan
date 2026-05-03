@@ -3,7 +3,7 @@ import { escapeHtml, parseServedArticlePath, type ServedArticlePath } from "@hos
 const CACHE_TTL_SECONDS = 300;
 
 export function buildHtmlDocumentPrefix(article: ServedArticlePath): string {
-  const title = escapeHtml(`${article.owner}/${article.slug}`);
+  const title = escapeHtml(`${article.owner}/${article.repo}/${article.slug}`);
 
   return `<!doctype html>
 <html lang="ja">

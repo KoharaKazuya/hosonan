@@ -6,10 +6,52 @@ export interface ArticlePath {
 
 export interface ServedArticlePath {
   owner: string;
+  repo: string;
   date: string;
   slug: string;
   r2Key: string;
   canonicalPath: string;
+}
+
+export interface ArticleIndexEntry extends ArticlePath {
+  r2Key: string;
+}
+
+export interface RepoSyncQueueMessage {
+  repositoryId: number;
+  ownerLogin: string;
+  repoName: string;
+  installationId: number;
+  targetBranch: string;
+}
+
+export interface RepoSyncNotification extends RepoSyncQueueMessage {
+  targetCommit: string;
+}
+
+export interface RepoSyncClaim {
+  status: "claimed" | "busy" | "idle" | "retry_later";
+  leaseId?: string;
+  leaseExpiresAt?: number;
+  retryAfterSeconds?: number;
+  repositoryId?: number;
+  ownerLogin?: string;
+  repoName?: string;
+  installationId?: number;
+  targetBranch?: string;
+  targetCommit?: string;
+  lastSyncedCommit?: string;
+  lastArticleIndex?: ArticleIndexEntry[];
+}
+
+export interface RepoSyncCompleteResult {
+  syncedCommit: string;
+  articleIndex: ArticleIndexEntry[];
+}
+
+export interface RepoSyncFailure {
+  message: string;
+  retryAt?: number;
 }
 
 const ARTICLE_INDEX_RE = /^articles\/(\d{4}-\d{2}-\d{2})\/([^/]+)\/index\.md$/;
@@ -28,8 +70,8 @@ export function matchArticleMarkdownPath(path: string): ArticlePath | null {
   };
 }
 
-export function buildArticleR2Key(ownerLogin: string, article: Pick<ArticlePath, "date" | "slug">): string {
-  return `gh/${ownerLogin}/${article.date}/${article.slug}/index.html`;
+export function buildArticleR2Key(ownerLogin: string, repoName: string, article: Pick<ArticlePath, "date" | "slug">): string {
+  return `gh/${ownerLogin}/${repoName}/${article.date}/${article.slug}/index.html`;
 }
 
 export function parseServedArticlePath(pathname: string): ServedArticlePath | null {
@@ -38,22 +80,24 @@ export function parseServedArticlePath(pathname: string): ServedArticlePath | nu
     return null;
   }
 
-  const hasDirectoryPath = rawSegments.length === 6 && rawSegments[5] === "";
-  const hasIndexPath = rawSegments.length === 6 && rawSegments[5] === "index.html";
+  const hasDirectoryPath = rawSegments.length === 7 && rawSegments[6] === "";
+  const hasIndexPath = rawSegments.length === 7 && rawSegments[6] === "index.html";
   if (!hasDirectoryPath && !hasIndexPath) {
     return null;
   }
 
   const owner = decodePathSegment(rawSegments[2]);
-  const date = decodePathSegment(rawSegments[3]);
-  const slug = decodePathSegment(rawSegments[4]);
-  if (!owner || !date || !slug || !DATE_RE.test(date)) {
+  const repo = decodePathSegment(rawSegments[3]);
+  const date = decodePathSegment(rawSegments[4]);
+  const slug = decodePathSegment(rawSegments[5]);
+  if (!owner || !repo || !date || !slug || !DATE_RE.test(date)) {
     return null;
   }
 
-  const r2Key = buildArticleR2Key(owner, { date, slug });
+  const r2Key = buildArticleR2Key(owner, repo, { date, slug });
   return {
     owner,
+    repo,
     date,
     slug,
     r2Key,

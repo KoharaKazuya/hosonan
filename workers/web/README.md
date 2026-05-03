@@ -7,14 +7,14 @@
 次の URL を記事ページとして扱います。
 
 ```text
-/gh/<owner>/<YYYY-MM-DD>/<slug>/
-/gh/<owner>/<YYYY-MM-DD>/<slug>/index.html
+/gh/<owner>/<repo>/<YYYY-MM-DD>/<slug>/
+/gh/<owner>/<repo>/<YYYY-MM-DD>/<slug>/index.html
 ```
 
 どちらも同じ R2 key と cache key に正規化します。
 
 ```text
-gh/<owner>/<YYYY-MM-DD>/<slug>/index.html
+gh/<owner>/<repo>/<YYYY-MM-DD>/<slug>/index.html
 ```
 
 ## レスポンス

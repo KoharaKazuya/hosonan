@@ -1,6 +1,6 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
-  "name": "hosonan-github-webhook",
+  "name": "hosonan-article-renderer",
   "main": "src/worker.ts",
   "compatibility_date": "2026-05-03",
   "compatibility_flags": ["nodejs_compat"],
@@ -17,28 +17,29 @@
     },
   },
   "queues": {
-    "producers": [
+    "consumers": [
       {
-        "binding": "ARTICLE_RENDER_QUEUE",
         "queue": "hosonan-article-render",
       },
     ],
   },
+  "r2_buckets": [
+    {
+      "binding": "ARTICLES_BUCKET",
+      "bucket_name": "hosonan-articles",
+      "remote": true,
+    },
+  ],
   "durable_objects": {
     "bindings": [
       {
         "name": "REPO_SYNC_STATE",
         "class_name": "RepoSyncState",
+        "script_name": "hosonan-github-webhook",
       },
     ],
   },
-  "migrations": [
-    {
-      "tag": "v1",
-      "new_sqlite_classes": ["RepoSyncState"],
-    },
-  ],
   "secrets": {
-    "required": ["WEBHOOK_SECRET"],
+    "required": ["GITHUB_APP_ID", "GITHUB_PRIVATE_KEY"],
   },
 }

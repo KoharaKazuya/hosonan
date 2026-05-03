@@ -1,43 +1,59 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import worker from "../src/worker";
+import type { RepoSyncNotification, RepoSyncQueueMessage } from "@hosonan/shared";
+import { describe, expect, it, vi } from "vitest";
+import worker, { RepoSyncStateDurableObject } from "../src/worker";
 import type { GitHubPushPayload } from "../src/types";
 
-vi.mock("../src/github", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/github")>();
-  return {
-    ...actual,
-    createInstallationAccessToken: vi.fn(async () => "token"),
-    fetchMarkdownAtCommit: vi.fn(async () => "# Article")
-  };
-});
+class MockQueue {
+  messages: RepoSyncQueueMessage[] = [];
 
-const github = await import("../src/github");
-
-class MockR2Bucket {
-  puts: Array<{ key: string; value: string; contentType?: string }> = [];
-  deletes: string[] = [];
-
-  async put(key: string, value: string, options?: R2PutOptions): Promise<R2Object> {
-    const httpMetadata = options?.httpMetadata;
-    this.puts.push({
-      key,
-      value,
-      contentType: httpMetadata instanceof Headers ? (httpMetadata.get("content-type") ?? undefined) : httpMetadata?.contentType
-    });
-    return {} as R2Object;
-  }
-
-  async delete(key: string): Promise<void> {
-    this.deletes.push(key);
+  async send(message: RepoSyncQueueMessage): Promise<void> {
+    this.messages.push(message);
   }
 }
 
-function env(bucket = new MockR2Bucket()): Env {
+class MockStorage {
+  values = new Map<string, unknown>();
+  alarm: number | null = null;
+
+  async get<T>(key: string): Promise<T | undefined> {
+    return this.values.get(key) as T | undefined;
+  }
+
+  async put<T>(key: string, value: T): Promise<void> {
+    this.values.set(key, value);
+  }
+
+  async setAlarm(alarm: number): Promise<void> {
+    this.alarm = alarm;
+  }
+}
+
+class MockRepoSyncStub {
+  notifications: RepoSyncNotification[] = [];
+
+  async fetch(_input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    this.notifications.push(JSON.parse(String(init?.body)) as RepoSyncNotification);
+    return Response.json({ ok: true });
+  }
+}
+
+class MockDurableObjectNamespace {
+  readonly stub = new MockRepoSyncStub();
+
+  idFromName(name: string): DurableObjectId {
+    return { name } as unknown as DurableObjectId;
+  }
+
+  get(_id: DurableObjectId): DurableObjectStub {
+    return this.stub as unknown as DurableObjectStub;
+  }
+}
+
+function env(queue = new MockQueue(), namespace = new MockDurableObjectNamespace()): Env {
   return {
-    GITHUB_APP_ID: "1",
-    GITHUB_PRIVATE_KEY: "unused",
     WEBHOOK_SECRET: "secret",
-    ARTICLES_BUCKET: bucket as unknown as R2Bucket
+    ARTICLE_RENDER_QUEUE: queue as unknown as Queue<RepoSyncQueueMessage>,
+    REPO_SYNC_STATE: namespace as unknown as Env["REPO_SYNC_STATE"]
   };
 }
 
@@ -61,110 +77,159 @@ async function request(payload: GitHubPushPayload, event = "push", secret = "sec
   });
 }
 
-type PushCommit = NonNullable<GitHubPushPayload["commits"]>[number];
-
-function pushPayload(commit: Partial<PushCommit>): GitHubPushPayload {
+function pushPayload(overrides: Partial<GitHubPushPayload> = {}): GitHubPushPayload {
   return {
+    ref: "refs/heads/main",
+    after: "abc123",
     repository: {
+      id: 42,
       owner: { login: "octo" },
       name: "articles",
-      full_name: "octo/articles"
+      full_name: "octo/articles",
+      default_branch: "main"
     },
     installation: { id: 123 },
-    commits: [
-      {
-        id: "abc123",
-        added: [],
-        modified: [],
-        removed: [],
-        ...commit
-      }
-    ]
+    commits: [],
+    ...overrides
   };
 }
 
-describe("worker webhook", () => {
-  beforeEach(() => {
-    vi.mocked(github.createInstallationAccessToken).mockClear();
-    vi.mocked(github.fetchMarkdownAtCommit).mockClear();
-  });
+function durableObject(queue = new MockQueue(), storage = new MockStorage()): RepoSyncStateDurableObject {
+  return new RepoSyncStateDurableObject({ storage } as unknown as DurableObjectState, {
+    ARTICLE_RENDER_QUEUE: queue as unknown as Queue<RepoSyncQueueMessage>
+  } as Env);
+}
 
+describe("worker webhook", () => {
   it("returns 401 for invalid signatures", async () => {
-    const payload = pushPayload({ added: ["articles/2026-05-02/test/index.md"] });
-    const response = await worker.fetch(await request(payload, "push", "wrong"), env());
+    const namespace = new MockDurableObjectNamespace();
+    const response = await worker.fetch(await request(pushPayload(), "push", "wrong"), env(new MockQueue(), namespace));
 
     expect(response.status).toBe(401);
+    expect(namespace.stub.notifications).toHaveLength(0);
   });
 
-  it("ignores non-push events", async () => {
-    const bucket = new MockR2Bucket();
-    const response = await worker.fetch(await request(pushPayload({}), "ping"), env(bucket));
+  it("ignores non-push events without notifying the repo sync state", async () => {
+    const namespace = new MockDurableObjectNamespace();
+    const response = await worker.fetch(await request(pushPayload(), "ping"), env(new MockQueue(), namespace));
 
     expect(response.status).toBe(202);
-    expect(bucket.puts).toHaveLength(0);
-    expect(bucket.deletes).toHaveLength(0);
+    expect(namespace.stub.notifications).toHaveLength(0);
   });
 
-  it("puts added and modified article Markdown into R2", async () => {
-    const bucket = new MockR2Bucket();
-    const response = await worker.fetch(
-      await request(
-        pushPayload({
-          added: ["articles/2026-05-02/first/index.md"],
-          modified: ["articles/2026-05-03/second/index.md"]
-        })
-      ),
-      env(bucket)
-    );
+  it("notifies the repo sync state for target branch pushes", async () => {
+    const namespace = new MockDurableObjectNamespace();
+    const response = await worker.fetch(await request(pushPayload()), env(new MockQueue(), namespace));
 
     expect(response.status).toBe(200);
-    expect(bucket.puts).toEqual([
+    await expect(response.json()).resolves.toEqual({ notified: true, repositoryId: 42, targetCommit: "abc123" });
+    expect(namespace.stub.notifications).toEqual([
       {
-        key: "gh/octo/2026-05-02/first/index.html",
-        value: '<h1 id="article">Article</h1>',
-        contentType: "text/html; charset=utf-8"
-      },
-      {
-        key: "gh/octo/2026-05-03/second/index.html",
-        value: '<h1 id="article">Article</h1>',
-        contentType: "text/html; charset=utf-8"
+        repositoryId: 42,
+        ownerLogin: "octo",
+        repoName: "articles",
+        installationId: 123,
+        targetBranch: "main",
+        targetCommit: "abc123"
       }
     ]);
-    expect(github.fetchMarkdownAtCommit).toHaveBeenCalledWith(
-      "octo",
-      "articles",
-      "articles/2026-05-02/first/index.md",
-      "abc123",
-      "token"
-    );
   });
 
-  it("deletes removed article Markdown from R2", async () => {
-    const bucket = new MockR2Bucket();
+  it("ignores pushes for non-target branches", async () => {
+    const namespace = new MockDurableObjectNamespace();
     const response = await worker.fetch(
-      await request(pushPayload({ removed: ["articles/2026-05-02/first/index.md"] })),
-      env(bucket)
+      await request(pushPayload({ ref: "refs/heads/feature" })),
+      env(new MockQueue(), namespace)
     );
 
-    expect(response.status).toBe(200);
-    expect(bucket.deletes).toEqual(["gh/octo/2026-05-02/first/index.html"]);
-    expect(github.createInstallationAccessToken).not.toHaveBeenCalled();
+    expect(response.status).toBe(202);
+    expect(namespace.stub.notifications).toHaveLength(0);
+  });
+});
+
+describe("RepoSyncStateDurableObject", () => {
+  it("debounces notifications and enqueues the latest target commit on alarm", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const storage = new MockStorage();
+    const queue = new MockQueue();
+    const object = durableObject(queue, storage);
+
+    await object.notify({
+      repositoryId: 42,
+      ownerLogin: "octo",
+      repoName: "articles",
+      installationId: 123,
+      targetBranch: "main",
+      targetCommit: "first"
+    });
+    await object.notify({
+      repositoryId: 42,
+      ownerLogin: "octo",
+      repoName: "articles",
+      installationId: 123,
+      targetBranch: "main",
+      targetCommit: "second"
+    });
+
+    expect(storage.alarm).toBe(61_000);
+    await object.alarm();
+    expect(queue.messages).toEqual([
+      {
+        repositoryId: 42,
+        ownerLogin: "octo",
+        repoName: "articles",
+        installationId: 123,
+        targetBranch: "main"
+      }
+    ]);
+    vi.useRealTimers();
   });
 
-  it("does not update R2 for non-target files", async () => {
-    const bucket = new MockR2Bucket();
-    const response = await worker.fetch(
-      await request(
-        pushPayload({
-          added: ["articles/2026-05-02/first/index.html", "articles/2026-05-02/first/thumbnail.webp"]
-        })
-      ),
-      env(bucket)
-    );
+  it("does not issue a second lease while the first lease is active, then reclaims after expiry", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const object = durableObject();
+    await object.notify({
+      repositoryId: 42,
+      ownerLogin: "octo",
+      repoName: "articles",
+      installationId: 123,
+      targetBranch: "main",
+      targetCommit: "abc123"
+    });
 
-    expect(response.status).toBe(200);
-    expect(bucket.puts).toHaveLength(0);
-    expect(bucket.deletes).toHaveLength(0);
-    expect(github.createInstallationAccessToken).not.toHaveBeenCalled();
+    const first = await object.claimSync();
+    const busy = await object.claimSync();
+    vi.setSystemTime(11 * 60_000);
+    const second = await object.claimSync();
+
+    expect(first.status).toBe("claimed");
+    expect(busy.status).toBe("busy");
+    expect(second.status).toBe("claimed");
+    expect(second.leaseId).not.toBe(first.leaseId);
+    vi.useRealTimers();
+  });
+
+  it("ignores stale complete and fail calls with mismatched leases", async () => {
+    const object = durableObject();
+    await object.notify({
+      repositoryId: 42,
+      ownerLogin: "octo",
+      repoName: "articles",
+      installationId: 123,
+      targetBranch: "main",
+      targetCommit: "abc123"
+    });
+    const claim = await object.claimSync();
+
+    await expect(
+      object.completeSync("stale", { syncedCommit: "abc123", articleIndex: [] })
+    ).resolves.toEqual({ completed: false, ignored: true });
+    await expect(object.failSync("stale", { message: "failed" })).resolves.toEqual({ failed: false, ignored: true });
+    await expect(
+      object.completeSync(String(claim.leaseId), { syncedCommit: "abc123", articleIndex: [] })
+    ).resolves.toEqual({ completed: true });
+    await expect(object.claimSync()).resolves.toEqual({ status: "idle" });
   });
 });

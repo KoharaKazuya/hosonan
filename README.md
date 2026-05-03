@@ -27,6 +27,11 @@
     │   ├── package.json
     │   ├── src/
     │   └── test/
+    ├── article-renderer/
+    │   ├── README.md
+    │   ├── package.json
+    │   ├── src/
+    │   └── test/
     ├── shared/
     │   ├── package.json
     │   ├── src/
@@ -51,33 +56,37 @@
 
 ## Web サイト部分
 
-`workers/github-webhook` は、GitHub App webhook の `/api/github/webhook` で `articles/YYYY-MM-DD/<slug>/index.md` の push を検知し、Markdown を HTML 断片へ変換して Cloudflare R2 に保存する Cloudflare Worker です。
+`workers/github-webhook` は、GitHub App webhook の `/api/github/webhook` で対象 branch の push を検知し、repo 単位 Durable Object に同期 target commit を通知する Cloudflare Worker です。
 
-`workers/web` は、`/api` 以外の Web リクエストを受け、R2 に保存された HTML 断片を `/gh/<owner>/<YYYY-MM-DD>/<slug>/` の Web ページとして配信する Cloudflare Worker です。
+`workers/article-renderer` は、Queue consumer として repo 単位の message を受け取り、Durable Object の lease を取得してから GitHub の差分または全量スキャンで HTML 断片を Cloudflare R2 に保存し、消えた記事の R2 object を削除します。
+
+`workers/web` は、`/api` 以外の Web リクエストを受け、R2 に保存された HTML 断片を `/gh/<owner>/<repo>/<YYYY-MM-DD>/<slug>/` の Web ページとして配信する Cloudflare Worker です。
 
 `workers/router` は、`https://hosonan.koharakazuya.workers.dev` を単一の公開入口にし、`web` と `github-webhook` へ service binding で振り分ける Cloudflare Worker です。これはカスタムドメイン取得と Cloudflare Workers `routes` 機能設定ができるまでの一時的なワークアラウンドです。将来的にはカスタムドメインと `routes` 設定へ移行し、router を公開入口として維持しない前提です。
 
 `workers/shared` は、記事 path、R2 key、配信用 URL 正規化、HTML escape など、複数 Worker で使う純粋関数を提供します。
 
-現時点の Web サイト部分は、単一 repo 形状の `articles/YYYY-MM-DD/<slug>/index.md` を記事本文として変換・配信する最小実装です。
+現時点の Web サイト部分は、repo ごとの `articles/YYYY-MM-DD/<slug>/index.md` を記事本文として変換・配信する最小実装です。
 
 実装済みの範囲は次のとおりです。
 
 - GitHub webhook の `push` event を受信し、署名を検証する。
-- GitHub App installation access token を使って対象 Markdown を GitHub Contents API から取得する。
+- 対象 branch の push を repo Durable Object に集約し、60 秒 debounce 後に repo 単位 Queue message を enqueue する。
+- Queue consumer が Durable Object の lease を取得し、GitHub App installation access token を使って対象 repo を同期する。
+- GitHub compare API で差分同期し、compare 不能時は tree の全量スキャンで R2 を収束させる。
 - front matter を除いた Markdown を HTML 断片へ変換し、Cloudflare R2 に保存する。
-- 削除された記事に対応する R2 object を削除する。
+- repo 最新状態から消えた記事の R2 object を削除する。
 - R2 に保存された HTML 断片を最小限の HTML document に組み込み、Cache API を使って配信する。
 - `https://hosonan.koharakazuya.workers.dev` で記事配信と GitHub webhook を単一ドメイン化する。
 
 公開 URL は次のとおりです。
 
-- 記事 URL: `https://hosonan.koharakazuya.workers.dev/gh/<owner>/<YYYY-MM-DD>/<slug>/`
+- 記事 URL: `https://hosonan.koharakazuya.workers.dev/gh/<owner>/<repo>/<YYYY-MM-DD>/<slug>/`
 - GitHub webhook URL: `https://hosonan.koharakazuya.workers.dev/api/github/webhook`
 
-現状では、multi-tenant registry、Queue による非同期同期、Durable Objects による repo 単位 coalescing、D1、asset proxy、記事一覧、RSS、画像配信、GitHub repo への HTML 書き戻しは実装していません。Markdown 画像も asset proxy URL へ変換されず、現在の sanitizer では出力 HTML に残りません。
+現状では、multi-tenant registry、D1、asset proxy、記事一覧、RSS、画像配信、GitHub repo への HTML 書き戻しは実装していません。Markdown 画像も asset proxy URL へ変換されず、現在の sanitizer では出力 HTML に残りません。
 
-詳細、必要な secret / binding、R2 key 仕様、Markdown 対応範囲、テスト方法は [workers/github-webhook/README.md](workers/github-webhook/README.md) を参照してください。
+webhook 受信の詳細は [workers/github-webhook/README.md](workers/github-webhook/README.md) を、Queue consumer、必要な secret / binding、R2 key 仕様、Markdown 対応範囲、テスト方法は [workers/article-renderer/README.md](workers/article-renderer/README.md) を参照してください。
 
 GitHub repository を記事の source of truth として Cloudflare 上で公開する最終的な想定は [docs/github-backend-blog-system.md](docs/github-backend-blog-system.md) にまとめています。
 

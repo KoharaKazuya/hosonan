@@ -12,7 +12,7 @@
 
 ## 公開 URL
 
-- 記事 URL: `https://hosonan.koharakazuya.workers.dev/gh/<owner>/<YYYY-MM-DD>/<slug>/`
+- 記事 URL: `https://hosonan.koharakazuya.workers.dev/gh/<owner>/<repo>/<YYYY-MM-DD>/<slug>/`
 - GitHub webhook URL: `https://hosonan.koharakazuya.workers.dev/api/github/webhook`
 
 ## 検証
