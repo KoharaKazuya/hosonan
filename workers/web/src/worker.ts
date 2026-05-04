@@ -139,7 +139,7 @@ body{margin:0}
 .article-card:focus-visible{outline:3px solid #0969da;outline-offset:2px}
 .article-card img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;background:#eaeef2}
 .article-card-body{padding:14px 16px 16px}
-.article-card h2{margin:0 0 10px;font-size:1.05rem;line-height:1.35}
+.article-card h2{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;margin:0 0 10px;font-size:1.05rem;line-height:1.35}
 .article-meta{display:flex;flex-wrap:wrap;gap:6px 10px;margin:0;color:#57606a;font-size:.9rem}
 @media (prefers-color-scheme:dark){
 :root{background:#0d1117;color:#f0f6fc}

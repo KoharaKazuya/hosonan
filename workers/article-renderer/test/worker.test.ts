@@ -322,6 +322,23 @@ describe("article renderer", () => {
     });
   });
 
+  it("truncates long frontmatter titles before storing D1 article records", async () => {
+    const registry = new MockD1Database();
+    const stub = new MockRepoSyncStub();
+    const longTitle = "  " + "a".repeat(201) + "  ";
+    vi.mocked(github.compareCommits).mockResolvedValueOnce({
+      ok: true,
+      files: [{ filename: "articles/2026-05-02/long-title/index.md", status: "added" }]
+    });
+    vi.mocked(github.fetchMarkdownAtCommit).mockResolvedValueOnce(`---\ntitle: "${longTitle}"\n---\n# Rendered title`);
+
+    await syncRepositoryMessage(message(), env(new MockR2Bucket(), new MockDurableObjectNamespace(stub), new MockQueue(), registry));
+
+    expect(registry.articles.get("42:articles/2026-05-02/long-title/index.md")).toMatchObject({
+      title: "a".repeat(200)
+    });
+  });
+
   it("falls back to full scan and deletes missing previous articles when compare is unavailable", async () => {
     const bucket = new MockR2Bucket();
     const stub = new MockRepoSyncStub();
@@ -629,5 +646,35 @@ describe("article renderer", () => {
     ]);
     expect(bucket.puts[0].value).toContain("Markdown ファイルが 1 MiB を超えているため、このページでは本文を表示していません。");
     expect(bucket.puts[0].value).toContain("https://github.com/octo/articles/blob/fixed-head/articles/2026-05-04/large/index.md");
+  });
+
+  it("truncates oversized article slug titles in rebuild chunk records", async () => {
+    const registry = new MockD1Database();
+    const slug = "s".repeat(201);
+    vi.mocked(github.fetchFileMetadataAtCommit).mockResolvedValueOnce({ size: 1_048_577 });
+
+    await rebuildRepositoryChunkMessage(
+      {
+        type: "rebuild_repository_chunk",
+        repositoryId: 42,
+        ownerLogin: "octo",
+        repoName: "articles",
+        installationId: 123,
+        targetBranch: "main",
+        targetCommit: "fixed-head",
+        articles: [
+          {
+            date: "2026-05-04",
+            slug,
+            path: `articles/2026-05-04/${slug}/index.md`
+          }
+        ]
+      },
+      env(new MockR2Bucket(), new MockDurableObjectNamespace(), new MockQueue(), registry)
+    );
+
+    expect(registry.articles.get(`42:articles/2026-05-04/${slug}/index.md`)).toMatchObject({
+      title: "s".repeat(200)
+    });
   });
 });

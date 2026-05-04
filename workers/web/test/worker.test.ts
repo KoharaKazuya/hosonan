@@ -142,6 +142,8 @@ describe("site worker", () => {
     expect(html).toContain('<a class="article-card" href="/gh/octo/articles/2026-05-12/post-11/">');
     expect(html).toContain('src="https://raw.githubusercontent.com/octo/articles/commit-11/articles/2026-05-12/post-11/thumbnail.webp"');
     expect(html).toContain("<h2>Post 11</h2>");
+    expect(html).toContain("-webkit-line-clamp:3");
+    expect(html).toContain("overflow-wrap:anywhere");
     expect(html).toContain('<time datetime="2026-05-12">2026-05-12</time>');
     expect(html).toContain("<span>octo/articles</span>");
     expect(html).not.toContain("Inactive");

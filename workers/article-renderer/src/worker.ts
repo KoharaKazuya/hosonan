@@ -4,6 +4,7 @@ import {
   buildServedArticlePath,
   escapeHtml,
   matchArticleMarkdownPath,
+  truncateArticleTitle,
   type ArticleIndexEntry,
   type ArticlePath,
   type RebuildRepositoryChunkQueueMessage,
@@ -50,7 +51,7 @@ export async function renderArticleToR2(
   const html = markdown
     ? convertMarkdownToHtmlFragment(markdown)
     : oversizedMarkdownHtml(ownerLogin, repoName, article.path, commitSha);
-  const title = markdown ? extractMarkdownTitle(markdown, article.slug) : article.slug;
+  const title = truncateArticleTitle(markdown ? extractMarkdownTitle(markdown, article.slug) : article.slug);
   const key = r2Key(ownerLogin, repoName, article);
 
   await env.ARTICLES_BUCKET.put(key, html, {

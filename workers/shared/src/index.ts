@@ -5,6 +5,7 @@ export interface ArticlePath {
 }
 
 export const ARTICLE_MARKDOWN_MAX_BYTES = 1024 * 1024;
+export const ARTICLE_TITLE_MAX_CHARS = 200;
 
 export interface ServedArticlePath {
   owner: string;
@@ -158,6 +159,10 @@ export function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+export function truncateArticleTitle(title: string): string {
+  return [...title].slice(0, ARTICLE_TITLE_MAX_CHARS).join("");
 }
 
 export function buildServedArticlePath(ownerLogin: string, repoName: string, article: Pick<ArticlePath, "date" | "slug">): string {

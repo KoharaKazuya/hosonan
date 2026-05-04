@@ -1,15 +1,37 @@
 import { describe, expect, it } from "vitest";
 import {
   ARTICLE_MARKDOWN_MAX_BYTES,
+  ARTICLE_TITLE_MAX_CHARS,
   buildArticleR2Key,
   escapeHtml,
   matchArticleMarkdownPath,
-  parseServedArticlePath
+  parseServedArticlePath,
+  truncateArticleTitle
 } from "../src/index";
 
 describe("ARTICLE_MARKDOWN_MAX_BYTES", () => {
   it("sets the Markdown source limit to 1 MiB", () => {
     expect(ARTICLE_MARKDOWN_MAX_BYTES).toBe(1_048_576);
+  });
+});
+
+describe("ARTICLE_TITLE_MAX_CHARS", () => {
+  it("sets the public article title limit to 200 characters", () => {
+    expect(ARTICLE_TITLE_MAX_CHARS).toBe(200);
+  });
+});
+
+describe("truncateArticleTitle", () => {
+  it("keeps titles at or below the article title limit unchanged", () => {
+    expect(truncateArticleTitle("a".repeat(200))).toBe("a".repeat(200));
+  });
+
+  it("truncates titles longer than the article title limit", () => {
+    expect(truncateArticleTitle("a".repeat(201))).toBe("a".repeat(200));
+  });
+
+  it("counts Unicode code points instead of UTF-16 code units", () => {
+    expect(truncateArticleTitle("😀".repeat(201))).toBe("😀".repeat(200));
   });
 });
 
