@@ -1,4 +1,4 @@
-import { matchArticleMarkdownPath, type ArticlePath } from "@hosonan/shared";
+import { HOSONAN_CHANNEL_CONFIG_PATH, matchArticleMarkdownPath, type ArticlePath } from "@hosonan/shared";
 
 const textEncoder = new TextEncoder();
 
@@ -226,6 +226,32 @@ export async function fetchMarkdownAtCommit(
 
   if (!response.ok) {
     throw githubError("Failed to fetch Markdown from GitHub", response);
+  }
+
+  return response.text();
+}
+
+export async function fetchChannelConfigAtCommit(
+  owner: string,
+  repo: string,
+  commitSha: string,
+  token: string
+): Promise<string | null> {
+  const url = repoApiUrl(owner, repo, contentsApiPath(HOSONAN_CHANNEL_CONFIG_PATH, commitSha));
+  const response = await githubFetch(url, {
+    headers: {
+      Accept: "application/vnd.github.raw",
+      Authorization: `Bearer ${token}`,
+      "User-Agent": "hosonan-worker",
+      "X-GitHub-Api-Version": "2022-11-28"
+    }
+  });
+
+  if (response.status === 404) {
+    return null;
+  }
+  if (!response.ok) {
+    throw githubError("Failed to fetch channel config from GitHub", response);
   }
 
   return response.text();

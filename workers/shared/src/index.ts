@@ -6,6 +6,10 @@ export interface ArticlePath {
 
 export const ARTICLE_MARKDOWN_MAX_BYTES = 1024 * 1024;
 export const ARTICLE_TITLE_MAX_CHARS = 200;
+export const HOSONAN_CHANNEL_CONFIG_PATH = "hosonan.json";
+export const CHANNEL_NAME_MAX_CHARS = 100;
+export const CHANNEL_BIOGRAPHY_MAX_CHARS = 1000;
+export const CHANNEL_ICON_PATH_MAX_CHARS = 512;
 
 export interface ServedArticlePath {
   owner: string;
@@ -33,6 +37,16 @@ export interface StoredArticle {
   status: string;
   synced_commit: string;
   updated_at: string;
+  channel_name: string | null;
+  channel_icon_path: string | null;
+  channel_biography: string | null;
+  channel_updated_at: string | null;
+}
+
+export interface ChannelConfig {
+  name: string | null;
+  icon: string | null;
+  biography: string | null;
 }
 
 export interface RepoSyncRepositoryQueueMessage {
@@ -165,6 +179,31 @@ export function truncateArticleTitle(title: string): string {
   return [...title].slice(0, ARTICLE_TITLE_MAX_CHARS).join("");
 }
 
+export function validateChannelConfig(value: unknown): ChannelConfig {
+  if (!isPlainObject(value)) {
+    return emptyChannelConfig();
+  }
+
+  return {
+    name: trimOptionalString(value.name, CHANNEL_NAME_MAX_CHARS),
+    icon: validateChannelIconPath(value.icon),
+    biography: trimOptionalString(value.biography, CHANNEL_BIOGRAPHY_MAX_CHARS)
+  };
+}
+
+export function parseChannelConfigJson(json: string): ChannelConfig {
+  try {
+    return validateChannelConfig(JSON.parse(json));
+  } catch {
+    return emptyChannelConfig();
+  }
+}
+
+export function buildRepositoryRawUrl(ownerLogin: string, repoName: string, commitSha: string, path: string): string {
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  return `https://raw.githubusercontent.com/${encodeURIComponent(ownerLogin)}/${encodeURIComponent(repoName)}/${encodeURIComponent(commitSha)}/${encodedPath}`;
+}
+
 export function buildServedArticlePath(ownerLogin: string, repoName: string, article: Pick<ArticlePath, "date" | "slug">): string {
   return `/gh/${encodeURIComponent(ownerLogin)}/${encodeURIComponent(repoName)}/${encodeURIComponent(article.date)}/${encodeURIComponent(article.slug)}/`;
 }
@@ -176,4 +215,43 @@ function decodePathSegment(value: string): string | null {
   } catch {
     return null;
   }
+}
+
+function emptyChannelConfig(): ChannelConfig {
+  return { name: null, icon: null, biography: null };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function trimOptionalString(value: unknown, maxChars: number): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  return [...trimmed].slice(0, maxChars).join("");
+}
+
+export function validateChannelIconPath(value: unknown): string | null {
+  const path = trimOptionalString(value, CHANNEL_ICON_PATH_MAX_CHARS);
+  if (!path || typeof value !== "string" || [...value.trim()].length > CHANNEL_ICON_PATH_MAX_CHARS) {
+    return null;
+  }
+  if (path.startsWith("/") || path.startsWith("\\") || path.includes("\\")) {
+    return null;
+  }
+  if (/^[a-zA-Z][a-zA-Z\d+.-]*:/.test(path)) {
+    return null;
+  }
+  if (path.split("/").some((segment) => segment === "..")) {
+    return null;
+  }
+
+  return path;
 }

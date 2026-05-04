@@ -146,8 +146,67 @@ describe("site worker", () => {
     expect(html).toContain("-webkit-line-clamp:3");
     expect(html).toContain("overflow-wrap:anywhere");
     expect(html).toContain('<time datetime="2026-05-12">2026-05-12</time>');
-    expect(html).toContain("<span>octo/articles</span>");
+    expect(html).toContain('<span class="channel-placeholder" aria-hidden="true">O</span>');
+    expect(html).toContain('<span class="channel-name">octo/articles</span>');
     expect(html).not.toContain("Inactive");
+  });
+
+  it("renders channel name and repository icon on home article cards", async () => {
+    const response = await worker.fetch(
+      request("/"),
+      env(
+        new MockR2Bucket(),
+        new MockD1Database([
+          article({
+            channel_name: "Octo & Friends",
+            channel_icon_path: "images/channel icon.webp",
+            channel_biography: "Not rendered"
+          })
+        ])
+      )
+    );
+    const html = await response.text();
+
+    expect(html).toContain('<span class="channel-name">Octo &amp; Friends</span>');
+    expect(html).toContain(
+      'src="https://raw.githubusercontent.com/octo/articles/abc123/images/channel%20icon.webp"'
+    );
+    expect(html).not.toContain("Not rendered");
+  });
+
+  it("escapes channel fallback text and encodes raw icon URLs", async () => {
+    const response = await worker.fetch(
+      request("/"),
+      env(
+        new MockR2Bucket(),
+        new MockD1Database([
+          article({
+            owner_login: "octo user",
+            repo_name: "article repo",
+            synced_commit: "commit sha",
+            channel_name: "<Channel>",
+            channel_icon_path: "assets/icon & avatar.webp"
+          })
+        ])
+      )
+    );
+    const html = await response.text();
+
+    expect(html).toContain('<span class="channel-name">&lt;Channel&gt;</span>');
+    expect(html).toContain(
+      'src="https://raw.githubusercontent.com/octo%20user/article%20repo/commit%20sha/assets/icon%20%26%20avatar.webp"'
+    );
+  });
+
+  it("falls back to a placeholder when the stored channel icon path is unsafe", async () => {
+    const response = await worker.fetch(
+      request("/"),
+      env(new MockR2Bucket(), new MockD1Database([article({ channel_name: "Unsafe", channel_icon_path: "https://example.com/icon.webp" })]))
+    );
+    const html = await response.text();
+
+    expect(html).toContain('<span class="channel-placeholder" aria-hidden="true">U</span>');
+    expect(html).not.toContain("https://example.com/icon.webp");
   });
 
   it("supports HEAD for the home page without a response body", async () => {

@@ -1,12 +1,15 @@
 import {
   ARTICLE_MARKDOWN_MAX_BYTES,
+  HOSONAN_CHANNEL_CONFIG_PATH,
   buildArticleR2Key,
   buildServedArticlePath,
   escapeHtml,
   matchArticleMarkdownPath,
+  parseChannelConfigJson,
   truncateArticleTitle,
   type ArticleIndexEntry,
   type ArticlePath,
+  type ChannelConfig,
   type RebuildRepositoryChunkQueueMessage,
   type RebuildRepositoryQueueMessage,
   type RepoSyncClaim,
@@ -18,6 +21,7 @@ import {
 import {
   compareCommits,
   createInstallationAccessToken,
+  fetchChannelConfigAtCommit,
   fetchDefaultBranchHead,
   fetchFileMetadataAtCommit,
   fetchMarkdownAtCommit,
@@ -79,6 +83,7 @@ function githubBlobUrl(ownerLogin: string, repoName: string, commitSha: string, 
 export async function rebuildRepositoryMessage(message: RebuildRepositoryQueueMessage, env: Env): Promise<number> {
   const token = await createInstallationAccessToken(env, message.installationId);
   const targetCommit = await fetchDefaultBranchHead(message.ownerLogin, message.repoName, message.targetBranch, token);
+  await updateRepositoryChannelConfig(message.repositoryId, message.ownerLogin, message.repoName, targetCommit, token, env);
   const articles = (await listArticleFilesAtCommit(message.ownerLogin, message.repoName, targetCommit, token)).sort(compareArticlePath);
   let enqueued = 0;
 
@@ -156,6 +161,11 @@ export async function syncClaimedRepository(
     return fullScanSync(claim, token, env, stub);
   }
 
+  if (touchedPaths.channelConfigChanged) {
+    await ensureLeaseFresh(claim, stub);
+    await updateRepositoryChannelConfig(claim.repositoryId, claim.ownerLogin, claim.repoName, claim.targetCommit, token, env);
+  }
+
   for (const path of touchedPaths.removed) {
     const previous = nextIndex.get(path);
     if (previous) {
@@ -216,6 +226,8 @@ async function fullScanSync(
   env: Env,
   stub: DurableObjectStub
 ): Promise<RepoSyncCompleteResult> {
+  await updateRepositoryChannelConfig(claim.repositoryId, claim.ownerLogin, claim.repoName, claim.targetCommit, token, env);
+
   const articles = await listArticleFilesAtCommit(claim.ownerLogin, claim.repoName, claim.targetCommit, token);
   const previousByPath = new Map((claim.lastArticleIndex ?? []).map((article) => [article.path, article]));
   const latestPaths = new Set(articles.map((article) => article.path));
@@ -298,6 +310,33 @@ async function markRepositoryArticleRecordsStatus(repositoryId: number, status: 
     .run();
 }
 
+async function updateRepositoryChannelConfig(
+  repositoryId: number,
+  ownerLogin: string,
+  repoName: string,
+  commitSha: string,
+  token: string,
+  env: Env
+): Promise<void> {
+  const configJson = await fetchChannelConfigAtCommit(ownerLogin, repoName, commitSha, token);
+  const config = configJson === null ? emptyChannelConfig() : parseChannelConfigJson(configJson);
+  await saveRepositoryChannelConfig(repositoryId, config, env);
+}
+
+async function saveRepositoryChannelConfig(repositoryId: number, config: ChannelConfig, env: Env): Promise<void> {
+  await env.GITHUB_REGISTRY.prepare(
+    `UPDATE repositories
+     SET channel_name = ?, channel_icon_path = ?, channel_biography = ?, channel_updated_at = ?
+     WHERE repository_id = ?`
+  )
+    .bind(config.name, config.icon, config.biography, new Date().toISOString(), repositoryId)
+    .run();
+}
+
+function emptyChannelConfig(): ChannelConfig {
+  return { name: null, icon: null, biography: null };
+}
+
 function toArticleIndexEntry(article: RenderedArticle): ArticleIndexEntry {
   return {
     date: article.date,
@@ -310,7 +349,7 @@ function toArticleIndexEntry(article: RenderedArticle): ArticleIndexEntry {
 async function changedArticlePaths(
   claim: ActiveClaim,
   token: string
-): Promise<{ upserted: ArticlePath[]; removed: string[] } | null> {
+): Promise<{ upserted: ArticlePath[]; removed: string[]; channelConfigChanged: boolean } | null> {
   if (!claim.lastSyncedCommit) {
     return null;
   }
@@ -327,11 +366,17 @@ async function changedArticlePaths(
 
   const upserted = new Map<string, ArticlePath>();
   const removed = new Set<string>();
+  let channelConfigChanged = false;
   for (const file of comparison.files) {
+    channelConfigChanged ||= isChannelConfigChanged(file);
     collectChangedArticleFile(file, upserted, removed);
   }
 
-  return { upserted: [...upserted.values()], removed: [...removed] };
+  return { upserted: [...upserted.values()], removed: [...removed], channelConfigChanged };
+}
+
+function isChannelConfigChanged(file: GitHubChangedFile): boolean {
+  return file.filename === HOSONAN_CHANNEL_CONFIG_PATH || file.previous_filename === HOSONAN_CHANNEL_CONFIG_PATH;
 }
 
 function collectChangedArticleFile(file: GitHubChangedFile, upserted: Map<string, ArticlePath>, removed: Set<string>): void {

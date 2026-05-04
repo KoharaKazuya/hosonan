@@ -13,6 +13,7 @@ import worker, { rebuildRepositoryChunkMessage, rebuildRepositoryMessage, syncRe
 vi.mock("../src/github", () => ({
   createInstallationAccessToken: vi.fn(async () => "token"),
   compareCommits: vi.fn(async () => ({ ok: true, files: [] })),
+  fetchChannelConfigAtCommit: vi.fn(async () => null),
   fetchDefaultBranchHead: vi.fn(async () => "head"),
   fetchFileMetadataAtCommit: vi.fn(async () => ({ size: 1024 })),
   fetchMarkdownAtCommit: vi.fn(async (_owner: string, _repo: string, path: string) => `# ${path}`),
@@ -119,6 +120,7 @@ class MockD1PreparedStatement {
 
 class MockD1Database {
   articles = new Map<string, Record<string, unknown>>();
+  repositories = new Map<number, Record<string, unknown>>([[42, { repository_id: 42 }]]);
 
   prepare(query: string): MockD1PreparedStatement {
     return new MockD1PreparedStatement(this, query);
@@ -140,6 +142,13 @@ class MockD1Database {
         synced_commit: values[10],
         updated_at: values[11]
       });
+    } else if (query.includes("UPDATE repositories")) {
+      const row = this.repositories.get(Number(values[4])) ?? { repository_id: values[4] };
+      row.channel_name = values[0];
+      row.channel_icon_path = values[1];
+      row.channel_biography = values[2];
+      row.channel_updated_at = values[3];
+      this.repositories.set(Number(values[4]), row);
     } else if (query.includes("WHERE repository_id = ? AND article_path = ?")) {
       const row = this.articles.get(`${values[2]}:${values[3]}`);
       if (row) {
@@ -198,6 +207,8 @@ describe("article renderer", () => {
   beforeEach(() => {
     vi.mocked(github.createInstallationAccessToken).mockClear();
     vi.mocked(github.compareCommits).mockClear();
+    vi.mocked(github.fetchChannelConfigAtCommit).mockClear();
+    vi.mocked(github.fetchChannelConfigAtCommit).mockResolvedValue(null);
     vi.mocked(github.fetchDefaultBranchHead).mockClear();
     vi.mocked(github.fetchFileMetadataAtCommit).mockClear();
     vi.mocked(github.fetchMarkdownAtCommit).mockClear();
@@ -228,6 +239,7 @@ describe("article renderer", () => {
 
     expect(github.createInstallationAccessToken).toHaveBeenCalledWith(expect.objectContaining({ GITHUB_APP_ID: "1" }), 123);
     expect(github.compareCommits).toHaveBeenCalledWith("octo", "articles", "old", "new", "token");
+    expect(github.fetchChannelConfigAtCommit).not.toHaveBeenCalled();
     expect(bucket.deletes).toEqual(["gh/octo/articles/2026-05-01/removed/index.html"]);
     expect(bucket.puts).toEqual([
       {
@@ -322,6 +334,95 @@ describe("article renderer", () => {
     });
   });
 
+  it("stores channel config from hosonan.json when the config file changes during active sync", async () => {
+    const registry = new MockD1Database();
+    const stub = new MockRepoSyncStub();
+    vi.mocked(github.fetchChannelConfigAtCommit).mockResolvedValueOnce(
+      JSON.stringify({ name: "  Octo Channel  ", icon: "assets/channel.webp", biography: "  Articles from Octo  " })
+    );
+    vi.mocked(github.compareCommits).mockResolvedValueOnce({ ok: true, files: [{ filename: "hosonan.json", status: "modified" }] });
+
+    await syncRepositoryMessage(message(), env(new MockR2Bucket(), new MockDurableObjectNamespace(stub), new MockQueue(), registry));
+
+    expect(github.fetchChannelConfigAtCommit).toHaveBeenCalledWith("octo", "articles", "new", "token");
+    expect(registry.repositories.get(42)).toMatchObject({
+      channel_name: "Octo Channel",
+      channel_icon_path: "assets/channel.webp",
+      channel_biography: "Articles from Octo"
+    });
+    expect(typeof registry.repositories.get(42)?.channel_updated_at).toBe("string");
+  });
+
+  it("clears channel config when changed hosonan.json is absent during active sync", async () => {
+    const registry = new MockD1Database();
+    const stub = new MockRepoSyncStub();
+    registry.repositories.set(42, {
+      repository_id: 42,
+      channel_name: "Old",
+      channel_icon_path: "old.webp",
+      channel_biography: "Old bio"
+    });
+    vi.mocked(github.fetchChannelConfigAtCommit).mockResolvedValueOnce(null);
+    vi.mocked(github.compareCommits).mockResolvedValueOnce({ ok: true, files: [{ filename: "hosonan.json", status: "removed" }] });
+
+    await syncRepositoryMessage(message(), env(new MockR2Bucket(), new MockDurableObjectNamespace(stub), new MockQueue(), registry));
+
+    expect(registry.repositories.get(42)).toMatchObject({
+      channel_name: null,
+      channel_icon_path: null,
+      channel_biography: null
+    });
+  });
+
+  it("ignores malformed changed channel config fields without failing article sync", async () => {
+    const registry = new MockD1Database();
+    const stub = new MockRepoSyncStub();
+    vi.mocked(github.fetchChannelConfigAtCommit).mockResolvedValueOnce(
+      JSON.stringify({ name: "Valid", icon: "https://example.com/icon.webp", biography: 12 })
+    );
+    vi.mocked(github.compareCommits).mockResolvedValueOnce({
+      ok: true,
+      files: [
+        { filename: "hosonan.json", status: "modified" },
+        { filename: "articles/2026-05-02/first/index.md", status: "added" }
+      ]
+    });
+
+    await syncRepositoryMessage(message(), env(new MockR2Bucket(), new MockDurableObjectNamespace(stub), new MockQueue(), registry));
+
+    expect(registry.repositories.get(42)).toMatchObject({
+      channel_name: "Valid",
+      channel_icon_path: null,
+      channel_biography: null
+    });
+    expect(registry.articles.get("42:articles/2026-05-02/first/index.md")).toMatchObject({ status: "active" });
+  });
+
+  it("does not fetch channel config when compare shows only article changes", async () => {
+    const registry = new MockD1Database();
+    const stub = new MockRepoSyncStub();
+    registry.repositories.set(42, {
+      repository_id: 42,
+      channel_name: "Existing",
+      channel_icon_path: "existing.webp",
+      channel_biography: "Existing bio"
+    });
+    vi.mocked(github.compareCommits).mockResolvedValueOnce({
+      ok: true,
+      files: [{ filename: "articles/2026-05-02/first/index.md", status: "added" }]
+    });
+
+    await syncRepositoryMessage(message(), env(new MockR2Bucket(), new MockDurableObjectNamespace(stub), new MockQueue(), registry));
+
+    expect(github.fetchChannelConfigAtCommit).not.toHaveBeenCalled();
+    expect(registry.repositories.get(42)).toMatchObject({
+      channel_name: "Existing",
+      channel_icon_path: "existing.webp",
+      channel_biography: "Existing bio"
+    });
+    expect(registry.articles.get("42:articles/2026-05-02/first/index.md")).toMatchObject({ status: "active" });
+  });
+
   it("truncates long frontmatter titles before storing D1 article records", async () => {
     const registry = new MockD1Database();
     const stub = new MockRepoSyncStub();
@@ -361,6 +462,7 @@ describe("article renderer", () => {
 
     await syncRepositoryMessage(message(), env(bucket, new MockDurableObjectNamespace(stub)));
 
+    expect(github.fetchChannelConfigAtCommit).toHaveBeenCalledWith("octo", "articles", "new", "token");
     expect(bucket.deletes).toEqual(["gh/octo/articles/2026-05-01/removed/index.html"]);
     expect(bucket.puts[0].key).toBe("gh/octo/articles/2026-05-03/latest/index.html");
     expect(stub.completed?.result.articleIndex).toEqual([
@@ -389,6 +491,7 @@ describe("article renderer", () => {
     await syncRepositoryMessage(message(), env(bucket, new MockDurableObjectNamespace(stub)));
 
     expect(github.fetchDefaultBranchHead).toHaveBeenCalledWith("octo", "articles", "main", "token");
+    expect(github.fetchChannelConfigAtCommit).toHaveBeenCalledWith("octo", "articles", "head", "token");
     expect(github.listArticleFilesAtCommit).toHaveBeenCalledWith("octo", "articles", "head", "token");
     expect(stub.completed?.result.syncedCommit).toBe("head");
     expect(bucket.puts[0].key).toBe("gh/octo/articles/2026-05-03/latest/index.html");
@@ -482,6 +585,7 @@ describe("article renderer", () => {
 
     expect(github.createInstallationAccessToken).toHaveBeenCalledWith(expect.objectContaining({ GITHUB_APP_ID: "1" }), 123);
     expect(github.fetchDefaultBranchHead).toHaveBeenCalledWith("octo", "articles", "main", "token");
+    expect(github.fetchChannelConfigAtCommit).toHaveBeenCalledWith("octo", "articles", "fresh-head", "token");
     expect(github.listArticleFilesAtCommit).toHaveBeenCalledWith("octo", "articles", "fresh-head", "token");
     expect(bucket.puts).toEqual([]);
     expect(queue.messages).toEqual([
@@ -504,6 +608,31 @@ describe("article renderer", () => {
     ]);
     expect(stub.completed).toBeUndefined();
     expect(stub.failed).toBeUndefined();
+  });
+
+  it("updates channel config during rebuild repository before enqueueing chunks", async () => {
+    const registry = new MockD1Database();
+    vi.mocked(github.fetchDefaultBranchHead).mockResolvedValueOnce("fresh-head");
+    vi.mocked(github.fetchChannelConfigAtCommit).mockResolvedValueOnce(JSON.stringify({ name: "Rebuilt", icon: "icon.webp" }));
+    vi.mocked(github.listArticleFilesAtCommit).mockResolvedValueOnce([]);
+
+    await rebuildRepositoryMessage(
+      {
+        type: "rebuild_repository",
+        repositoryId: 42,
+        ownerLogin: "octo",
+        repoName: "articles",
+        installationId: 123,
+        targetBranch: "main"
+      },
+      env(new MockR2Bucket(), new MockDurableObjectNamespace(), new MockQueue(), registry)
+    );
+
+    expect(registry.repositories.get(42)).toMatchObject({
+      channel_name: "Rebuilt",
+      channel_icon_path: "icon.webp",
+      channel_biography: null
+    });
   });
 
   it("splits rebuild repository chunks into at most 100 articles", async () => {

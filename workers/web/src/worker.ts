@@ -1,4 +1,11 @@
-import { escapeHtml, parseServedArticlePath, type ServedArticlePath, type StoredArticle } from "@hosonan/shared";
+import {
+  buildRepositoryRawUrl,
+  escapeHtml,
+  parseServedArticlePath,
+  validateChannelIconPath,
+  type ServedArticlePath,
+  type StoredArticle
+} from "@hosonan/shared";
 import { KISO_CSS } from "./kiso-css";
 
 const CACHE_TTL_SECONDS = 300;
@@ -22,14 +29,20 @@ const HOME_PAGE_CSS = `
 .article-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:18px}
 .article-card{overflow:hidden;border:1px solid #d0d7de;border-radius:8px;background:#fff;color:inherit;text-decoration:none}
 .article-card:focus-visible{outline:3px solid #0969da;outline-offset:2px}
-.article-card img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;background:#eaeef2}
+.article-thumb{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;background:#eaeef2}
 .article-card-body{padding:14px 16px 16px}
 .article-card h2{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;margin:0 0 10px;font-size:1.05rem;line-height:1.35}
-.article-meta{display:flex;flex-wrap:wrap;gap:6px 10px;margin:0;color:#57606a;font-size:.9rem}
+.article-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin:0;color:#57606a;font-size:.9rem}
+.channel{display:inline-flex;min-width:0;align-items:center;gap:6px}
+.channel-icon,.channel-placeholder{flex:0 0 auto;width:22px;height:22px;border-radius:50%}
+.channel-icon{display:block;object-fit:cover;background:#eaeef2}
+.channel-placeholder{display:inline-grid;place-items:center;background:#d8dee4;color:#57606a;font-size:.75rem;font-weight:700;line-height:1}
+.channel-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 @media (prefers-color-scheme:dark){
 :root{background:#0d1117;color:#f0f6fc}
 .article-card{border-color:#30363d;background:#161b22}
 .article-meta{color:#8b949e}
+.channel-placeholder{background:#30363d;color:#c9d1d9}
 }
 `;
 
@@ -120,7 +133,8 @@ export async function recommendArticles(
   limit = HOME_ARTICLE_LIMIT
 ): Promise<StoredArticle[]> {
   const result = await env.GITHUB_REGISTRY.prepare(
-    `SELECT a.repository_id, a.owner_login, a.repo_name, a.article_path, a.slug, a.title, a.created_at, a.canonical_path, a.r2_key, a.status, a.synced_commit, a.updated_at
+    `SELECT a.repository_id, a.owner_login, a.repo_name, a.article_path, a.slug, a.title, a.created_at, a.canonical_path, a.r2_key, a.status, a.synced_commit, a.updated_at,
+       r.channel_name, r.channel_icon_path, r.channel_biography, r.channel_updated_at
      FROM articles a
      JOIN repositories r ON r.repository_id = a.repository_id
      WHERE a.status = 'active' AND r.status = 'active'
@@ -166,10 +180,10 @@ ${cards}
 
 function buildArticleCard(article: StoredArticle): string {
   return `<a class="article-card" href="${escapeHtml(article.canonical_path)}">
-<img src="${escapeHtml(thumbnailRawUrl(article))}" alt="">
+<img class="article-thumb" src="${escapeHtml(thumbnailRawUrl(article))}" alt="">
 <div class="article-card-body">
 <h2>${escapeHtml(article.title)}</h2>
-<p class="article-meta"><time datetime="${escapeHtml(article.created_at)}">${escapeHtml(article.created_at)}</time><span>${escapeHtml(`${article.owner_login}/${article.repo_name}`)}</span></p>
+<p class="article-meta"><time datetime="${escapeHtml(article.created_at)}">${escapeHtml(article.created_at)}</time>${buildChannelMeta(article)}</p>
 </div>
 </a>`;
 }
@@ -183,8 +197,28 @@ ${pageCss.trim()}
 
 function thumbnailRawUrl(article: Pick<StoredArticle, "owner_login" | "repo_name" | "synced_commit" | "article_path">): string {
   const articleDir = article.article_path.replace(/\/index\.md$/, "");
-  const encodedPath = `${articleDir}/thumbnail.webp`.split("/").map(encodeURIComponent).join("/");
-  return `https://raw.githubusercontent.com/${encodeURIComponent(article.owner_login)}/${encodeURIComponent(article.repo_name)}/${encodeURIComponent(article.synced_commit)}/${encodedPath}`;
+  return buildRepositoryRawUrl(article.owner_login, article.repo_name, article.synced_commit, `${articleDir}/thumbnail.webp`);
+}
+
+function buildChannelMeta(
+  article: Pick<StoredArticle, "owner_login" | "repo_name" | "synced_commit" | "channel_name" | "channel_icon_path">
+): string {
+  const displayName = channelDisplayName(article);
+  const iconPath = validateChannelIconPath(article.channel_icon_path);
+  const icon = iconPath
+    ? `<img class="channel-icon" src="${escapeHtml(
+        buildRepositoryRawUrl(article.owner_login, article.repo_name, article.synced_commit, iconPath)
+      )}" alt="">`
+    : `<span class="channel-placeholder" aria-hidden="true">${escapeHtml(channelPlaceholderText(displayName))}</span>`;
+  return `<span class="channel">${icon}<span class="channel-name">${escapeHtml(displayName)}</span></span>`;
+}
+
+function channelDisplayName(article: Pick<StoredArticle, "owner_login" | "repo_name" | "channel_name">): string {
+  return article.channel_name ?? `${article.owner_login}/${article.repo_name}`;
+}
+
+function channelPlaceholderText(displayName: string): string {
+  return ([...displayName.trim()][0] ?? "?").toUpperCase();
 }
 
 function buildHtmlDocumentStream(article: ServedArticlePath, body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {
