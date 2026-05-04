@@ -18,6 +18,10 @@ export interface GitHubArticleFile extends ArticlePath {
   sha?: string;
 }
 
+export interface GitHubFileMetadata {
+  size: number;
+}
+
 export async function fetchDefaultBranchHead(
   owner: string,
   repo: string,
@@ -210,11 +214,7 @@ export async function fetchMarkdownAtCommit(
   commitSha: string,
   token: string
 ): Promise<string> {
-  const url = repoApiUrl(
-    owner,
-    repo,
-    `contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(commitSha)}`
-  );
+  const url = repoApiUrl(owner, repo, contentsApiPath(path, commitSha));
   const response = await githubFetch(url, {
     headers: {
       Accept: "application/vnd.github.raw",
@@ -229,6 +229,26 @@ export async function fetchMarkdownAtCommit(
   }
 
   return response.text();
+}
+
+export async function fetchFileMetadataAtCommit(
+  owner: string,
+  repo: string,
+  path: string,
+  commitSha: string,
+  token: string
+): Promise<GitHubFileMetadata> {
+  const url = repoApiUrl(owner, repo, contentsApiPath(path, commitSha));
+  const response = await githubFetch(url, tokenHeaders(`Bearer ${token}`));
+  if (!response.ok) {
+    throw githubError("Failed to fetch GitHub file metadata", response);
+  }
+
+  const body = (await response.json()) as { size?: unknown };
+  if (typeof body.size !== "number") {
+    throw new Error("GitHub contents response did not include file size.");
+  }
+  return { size: body.size };
 }
 
 export function rateLimitRetryAt(response: Response): number | undefined {
@@ -253,6 +273,10 @@ export function rateLimitRetryAt(response: Response): number | undefined {
 
 function repoApiUrl(owner: string, repo: string, path: string): string {
   return `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${path}`;
+}
+
+function contentsApiPath(path: string, commitSha: string): string {
+  return `contents/${path.split("/").map(encodeURIComponent).join("/")}?ref=${encodeURIComponent(commitSha)}`;
 }
 
 function tokenHeaders(authorization: string, method = "GET"): RequestInit {

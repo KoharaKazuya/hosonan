@@ -1,5 +1,7 @@
 import {
+  ARTICLE_MARKDOWN_MAX_BYTES,
   buildArticleR2Key,
+  escapeHtml,
   matchArticleMarkdownPath,
   type ArticleIndexEntry,
   type ArticlePath,
@@ -15,6 +17,7 @@ import {
   compareCommits,
   createInstallationAccessToken,
   fetchDefaultBranchHead,
+  fetchFileMetadataAtCommit,
   fetchMarkdownAtCommit,
   listArticleFilesAtCommit,
   type GitHubChangedFile
@@ -38,8 +41,11 @@ export async function renderArticleToR2(
   token: string,
   env: Env
 ): Promise<ArticleIndexEntry> {
-  const markdown = await fetchMarkdownAtCommit(ownerLogin, repoName, article.path, commitSha, token);
-  const html = convertMarkdownToHtmlFragment(markdown);
+  const metadata = await fetchFileMetadataAtCommit(ownerLogin, repoName, article.path, commitSha, token);
+  const html =
+    metadata.size > ARTICLE_MARKDOWN_MAX_BYTES
+      ? oversizedMarkdownHtml(ownerLogin, repoName, article.path, commitSha)
+      : convertMarkdownToHtmlFragment(await fetchMarkdownAtCommit(ownerLogin, repoName, article.path, commitSha, token));
   const key = r2Key(ownerLogin, repoName, article);
 
   await env.ARTICLES_BUCKET.put(key, html, {
@@ -49,6 +55,19 @@ export async function renderArticleToR2(
   });
 
   return { ...article, r2Key: key };
+}
+
+function oversizedMarkdownHtml(ownerLogin: string, repoName: string, path: string, commitSha: string): string {
+  const url = githubBlobUrl(ownerLogin, repoName, commitSha, path);
+  return [
+    "<p>Markdown ファイルが 1 MiB を超えているため、このページでは本文を表示していません。</p>",
+    `<p>元記事は <a href="${escapeHtml(url)}" rel="noopener noreferrer">GitHub で確認</a> できます。</p>`
+  ].join("\n");
+}
+
+function githubBlobUrl(ownerLogin: string, repoName: string, commitSha: string, path: string): string {
+  const encodedPath = path.split("/").map(encodeURIComponent).join("/");
+  return `https://github.com/${encodeURIComponent(ownerLogin)}/${encodeURIComponent(repoName)}/blob/${encodeURIComponent(commitSha)}/${encodedPath}`;
 }
 
 export async function rebuildRepositoryMessage(message: RebuildRepositoryQueueMessage, env: Env): Promise<number> {

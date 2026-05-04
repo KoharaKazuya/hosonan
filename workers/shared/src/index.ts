@@ -4,6 +4,8 @@ export interface ArticlePath {
   path: string;
 }
 
+export const ARTICLE_MARKDOWN_MAX_BYTES = 1024 * 1024;
+
 export interface ServedArticlePath {
   owner: string;
   repo: string;

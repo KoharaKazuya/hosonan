@@ -14,6 +14,7 @@ vi.mock("../src/github", () => ({
   createInstallationAccessToken: vi.fn(async () => "token"),
   compareCommits: vi.fn(async () => ({ ok: true, files: [] })),
   fetchDefaultBranchHead: vi.fn(async () => "head"),
+  fetchFileMetadataAtCommit: vi.fn(async () => ({ size: 1024 })),
   fetchMarkdownAtCommit: vi.fn(async (_owner: string, _repo: string, path: string) => `# ${path}`),
   listArticleFilesAtCommit: vi.fn(async () => [])
 }));
@@ -132,6 +133,7 @@ describe("article renderer", () => {
     vi.mocked(github.createInstallationAccessToken).mockClear();
     vi.mocked(github.compareCommits).mockClear();
     vi.mocked(github.fetchDefaultBranchHead).mockClear();
+    vi.mocked(github.fetchFileMetadataAtCommit).mockClear();
     vi.mocked(github.fetchMarkdownAtCommit).mockClear();
     vi.mocked(github.listArticleFilesAtCommit).mockClear();
   });
@@ -178,6 +180,46 @@ describe("article renderer", () => {
         }
       ]
     });
+  });
+
+  it("stores a GitHub fallback instead of fetching oversized Markdown during sync", async () => {
+    const bucket = new MockR2Bucket();
+    const stub = new MockRepoSyncStub();
+    stub.claim.ownerLogin = "octo user";
+    stub.claim.repoName = "article repo";
+    stub.claim.targetCommit = "commit sha";
+    vi.mocked(github.compareCommits).mockResolvedValueOnce({
+      ok: true,
+      files: [{ filename: "articles/2026-05-02/large article/index.md", status: "added" }]
+    });
+    vi.mocked(github.fetchFileMetadataAtCommit).mockResolvedValueOnce({ size: 1_048_577 });
+
+    await syncRepositoryMessage(message(), env(bucket, new MockDurableObjectNamespace(stub)));
+
+    expect(github.fetchFileMetadataAtCommit).toHaveBeenCalledWith(
+      "octo user",
+      "article repo",
+      "articles/2026-05-02/large article/index.md",
+      "commit sha",
+      "token"
+    );
+    expect(github.fetchMarkdownAtCommit).not.toHaveBeenCalled();
+    expect(bucket.puts).toEqual([
+      {
+        key: "gh/octo user/article repo/2026-05-02/large article/index.html",
+        value:
+          '<p>Markdown ファイルが 1 MiB を超えているため、このページでは本文を表示していません。</p>\n<p>元記事は <a href="https://github.com/octo%20user/article%20repo/blob/commit%20sha/articles/2026-05-02/large%20article/index.md" rel="noopener noreferrer">GitHub で確認</a> できます。</p>',
+        contentType: "text/html; charset=utf-8"
+      }
+    ]);
+    expect(stub.completed?.result.articleIndex).toEqual([
+      {
+        date: "2026-05-02",
+        slug: "large article",
+        path: "articles/2026-05-02/large article/index.md",
+        r2Key: "gh/octo user/article repo/2026-05-02/large article/index.html"
+      }
+    ]);
   });
 
   it("falls back to full scan and deletes missing previous articles when compare is unavailable", async () => {
@@ -442,5 +484,42 @@ describe("article renderer", () => {
         contentType: "text/html; charset=utf-8"
       }
     ]);
+  });
+
+  it("keeps oversized articles in rebuild chunk results", async () => {
+    const bucket = new MockR2Bucket();
+    vi.mocked(github.fetchFileMetadataAtCommit).mockResolvedValueOnce({ size: 1_048_577 });
+
+    const result = await rebuildRepositoryChunkMessage(
+      {
+        type: "rebuild_repository_chunk",
+        repositoryId: 42,
+        ownerLogin: "octo",
+        repoName: "articles",
+        installationId: 123,
+        targetBranch: "main",
+        targetCommit: "fixed-head",
+        articles: [
+          {
+            date: "2026-05-04",
+            slug: "large",
+            path: "articles/2026-05-04/large/index.md"
+          }
+        ]
+      },
+      env(bucket)
+    );
+
+    expect(github.fetchMarkdownAtCommit).not.toHaveBeenCalled();
+    expect(result).toEqual([
+      {
+        date: "2026-05-04",
+        slug: "large",
+        path: "articles/2026-05-04/large/index.md",
+        r2Key: "gh/octo/articles/2026-05-04/large/index.html"
+      }
+    ]);
+    expect(bucket.puts[0].value).toContain("Markdown ファイルが 1 MiB を超えているため、このページでは本文を表示していません。");
+    expect(bucket.puts[0].value).toContain("https://github.com/octo/articles/blob/fixed-head/articles/2026-05-04/large/index.md");
   });
 });

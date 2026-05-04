@@ -1,5 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { buildArticleR2Key, escapeHtml, matchArticleMarkdownPath, parseServedArticlePath } from "../src/index";
+import {
+  ARTICLE_MARKDOWN_MAX_BYTES,
+  buildArticleR2Key,
+  escapeHtml,
+  matchArticleMarkdownPath,
+  parseServedArticlePath
+} from "../src/index";
+
+describe("ARTICLE_MARKDOWN_MAX_BYTES", () => {
+  it("sets the Markdown source limit to 1 MiB", () => {
+    expect(ARTICLE_MARKDOWN_MAX_BYTES).toBe(1_048_576);
+  });
+});
 
 describe("matchArticleMarkdownPath", () => {
   it("extracts article information from Markdown index paths", () => {
