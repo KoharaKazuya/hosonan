@@ -8,6 +8,8 @@
   ],
   "scripts": {
     "build": "npm run build --workspaces",
+    "rebuild:articles": "node scripts/rebuild-articles.mjs",
+    "test:scripts": "node --test scripts/*.test.mjs",
     "test": "npm test --workspaces",
     "types": "npm run types --workspace @hosonan/router && npm run types --workspace @hosonan/web && npm run types --workspace @hosonan/github-webhook && npm run types --workspace @hosonan/article-renderer",
     "types:check": "npm run types:check --workspace @hosonan/router && npm run types:check --workspace @hosonan/web && npm run types:check --workspace @hosonan/github-webhook && npm run types:check --workspace @hosonan/article-renderer"

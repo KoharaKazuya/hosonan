@@ -17,6 +17,12 @@
     },
   },
   "queues": {
+    "producers": [
+      {
+        "binding": "ARTICLE_RENDER_QUEUE",
+        "queue": "hosonan-article-render",
+      },
+    ],
     "consumers": [
       {
         "queue": "hosonan-article-render",

@@ -17,7 +17,7 @@ export interface ArticleIndexEntry extends ArticlePath {
   r2Key: string;
 }
 
-export interface RepoSyncQueueMessage {
+export interface RepoSyncRepositoryQueueMessage {
   repositoryId: number;
   ownerLogin: string;
   repoName: string;
@@ -26,7 +26,32 @@ export interface RepoSyncQueueMessage {
   desiredState: RepoSyncDesiredState;
 }
 
-export interface RepoSyncNotification extends RepoSyncQueueMessage {
+export interface RebuildRepositoryQueueMessage {
+  type: "rebuild_repository";
+  repositoryId: number;
+  ownerLogin: string;
+  repoName: string;
+  installationId: number;
+  targetBranch: string;
+}
+
+export interface RebuildRepositoryChunkQueueMessage {
+  type: "rebuild_repository_chunk";
+  repositoryId: number;
+  ownerLogin: string;
+  repoName: string;
+  installationId: number;
+  targetBranch: string;
+  targetCommit: string;
+  articles: ArticlePath[];
+}
+
+export type RepoSyncQueueMessage =
+  | RepoSyncRepositoryQueueMessage
+  | RebuildRepositoryQueueMessage
+  | RebuildRepositoryChunkQueueMessage;
+
+export interface RepoSyncNotification extends RepoSyncRepositoryQueueMessage {
   targetCommit?: string;
 }
 

@@ -3,9 +3,12 @@ import {
   matchArticleMarkdownPath,
   type ArticleIndexEntry,
   type ArticlePath,
+  type RebuildRepositoryChunkQueueMessage,
+  type RebuildRepositoryQueueMessage,
   type RepoSyncClaim,
   type RepoSyncCompleteResult,
   type RepoSyncFailure,
+  type RepoSyncRepositoryQueueMessage,
   type RepoSyncQueueMessage
 } from "@hosonan/shared";
 import {
@@ -20,6 +23,8 @@ import { convertMarkdownToHtmlFragment } from "./markdown";
 
 const LEASE_EXTEND_WINDOW_MS = 2 * 60_000;
 const DEFAULT_RETRY_SECONDS = 60;
+const REBUILD_REPOSITORY_CHUNK_SIZE = 100;
+const QUEUE_MESSAGE_MAX_BYTES = 128 * 1024;
 
 export function r2Key(ownerLogin: string, repoName: string, article: Pick<ArticlePath, "date" | "slug">): string {
   return buildArticleR2Key(ownerLogin, repoName, article);
@@ -46,7 +51,44 @@ export async function renderArticleToR2(
   return { ...article, r2Key: key };
 }
 
-export async function syncRepositoryMessage(message: RepoSyncQueueMessage, env: Env): Promise<"synced" | "busy" | "idle"> {
+export async function rebuildRepositoryMessage(message: RebuildRepositoryQueueMessage, env: Env): Promise<number> {
+  const token = await createInstallationAccessToken(env, message.installationId);
+  const targetCommit = await fetchDefaultBranchHead(message.ownerLogin, message.repoName, message.targetBranch, token);
+  const articles = (await listArticleFilesAtCommit(message.ownerLogin, message.repoName, targetCommit, token)).sort(compareArticlePath);
+  let enqueued = 0;
+
+  for (const articlesChunk of chunkRebuildArticles(message, targetCommit, articles)) {
+    await env.ARTICLE_RENDER_QUEUE.send({
+      type: "rebuild_repository_chunk",
+      repositoryId: message.repositoryId,
+      ownerLogin: message.ownerLogin,
+      repoName: message.repoName,
+      installationId: message.installationId,
+      targetBranch: message.targetBranch,
+      targetCommit,
+      articles: articlesChunk
+    } satisfies RebuildRepositoryChunkQueueMessage);
+    enqueued += 1;
+  }
+
+  return enqueued;
+}
+
+export async function rebuildRepositoryChunkMessage(
+  message: RebuildRepositoryChunkQueueMessage,
+  env: Env
+): Promise<ArticleIndexEntry[]> {
+  const token = await createInstallationAccessToken(env, message.installationId);
+  const rendered: ArticleIndexEntry[] = [];
+
+  for (const article of message.articles) {
+    rendered.push(await renderArticleToR2(message.ownerLogin, message.repoName, article, message.targetCommit, token, env));
+  }
+
+  return rendered;
+}
+
+export async function syncRepositoryMessage(message: RepoSyncRepositoryQueueMessage, env: Env): Promise<"synced" | "busy" | "idle"> {
   const stub = repoStateObject(env, message.repositoryId);
   const claim = await postJson<RepoSyncClaim>(stub, "/claim", {});
   if (claim.status === "busy" || claim.status === "retry_later") {
@@ -271,6 +313,76 @@ function compareArticlePath(left: ArticlePath, right: ArticlePath): number {
   return left.path.localeCompare(right.path);
 }
 
+function isRebuildRepositoryMessage(message: RepoSyncQueueMessage): message is RebuildRepositoryQueueMessage {
+  return "type" in message && message.type === "rebuild_repository";
+}
+
+function isRebuildRepositoryChunkMessage(message: RepoSyncQueueMessage): message is RebuildRepositoryChunkQueueMessage {
+  return "type" in message && message.type === "rebuild_repository_chunk";
+}
+
+function chunkRebuildArticles(
+  message: RebuildRepositoryQueueMessage,
+  targetCommit: string,
+  articles: ArticlePath[]
+): ArticlePath[][] {
+  const chunks: ArticlePath[][] = [];
+  let index = 0;
+
+  while (index < articles.length) {
+    const end = findRebuildChunkEnd(message, targetCommit, articles, index);
+    chunks.push(articles.slice(index, end));
+    index = end;
+  }
+
+  return chunks;
+}
+
+function findRebuildChunkEnd(
+  message: RebuildRepositoryQueueMessage,
+  targetCommit: string,
+  articles: ArticlePath[],
+  start: number
+): number {
+  let low = start + 1;
+  let high = Math.min(start + REBUILD_REPOSITORY_CHUNK_SIZE, articles.length);
+  let best = low;
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidate = rebuildChunkMessage(message, targetCommit, articles.slice(start, mid));
+    if (queueMessageSize(candidate) <= QUEUE_MESSAGE_MAX_BYTES || mid === start + 1) {
+      best = mid;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return best;
+}
+
+function rebuildChunkMessage(
+  message: RebuildRepositoryQueueMessage,
+  targetCommit: string,
+  articles: ArticlePath[]
+): RebuildRepositoryChunkQueueMessage {
+  return {
+    type: "rebuild_repository_chunk",
+    repositoryId: message.repositoryId,
+    ownerLogin: message.ownerLogin,
+    repoName: message.repoName,
+    installationId: message.installationId,
+    targetBranch: message.targetBranch,
+    targetCommit,
+    articles
+  };
+}
+
+function queueMessageSize(message: RepoSyncQueueMessage): number {
+  return new TextEncoder().encode(JSON.stringify(message)).byteLength;
+}
+
 class RetryLaterError extends Error {
   constructor(readonly delaySeconds: number) {
     super("Repo sync is already running or waiting for retry.");
@@ -298,7 +410,13 @@ export default {
   async queue(batch: MessageBatch<RepoSyncQueueMessage>, env: Env): Promise<void> {
     for (const message of batch.messages) {
       try {
-        await syncRepositoryMessage(message.body, env);
+        if (isRebuildRepositoryMessage(message.body)) {
+          await rebuildRepositoryMessage(message.body, env);
+        } else if (isRebuildRepositoryChunkMessage(message.body)) {
+          await rebuildRepositoryChunkMessage(message.body, env);
+        } else {
+          await syncRepositoryMessage(message.body, env);
+        }
       } catch (error) {
         if (error instanceof RetryLaterError) {
           message.retry({ delaySeconds: error.delaySeconds });

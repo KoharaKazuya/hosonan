@@ -1,6 +1,14 @@
-import type { RepoSyncClaim, RepoSyncCompleteResult, RepoSyncFailure, RepoSyncQueueMessage } from "@hosonan/shared";
+import type {
+  ArticlePath,
+  RebuildRepositoryChunkQueueMessage,
+  RepoSyncClaim,
+  RepoSyncCompleteResult,
+  RepoSyncFailure,
+  RepoSyncQueueMessage,
+  RepoSyncRepositoryQueueMessage
+} from "@hosonan/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import worker, { syncRepositoryMessage } from "../src/worker";
+import worker, { rebuildRepositoryChunkMessage, rebuildRepositoryMessage, syncRepositoryMessage } from "../src/worker";
 
 vi.mock("../src/github", () => ({
   createInstallationAccessToken: vi.fn(async () => "token"),
@@ -82,16 +90,29 @@ class MockDurableObjectNamespace {
   }
 }
 
-function env(bucket = new MockR2Bucket(), namespace = new MockDurableObjectNamespace()): Env {
+class MockQueue {
+  messages: RepoSyncQueueMessage[] = [];
+
+  async send(message: RepoSyncQueueMessage): Promise<void> {
+    this.messages.push(message);
+  }
+}
+
+function env(
+  bucket = new MockR2Bucket(),
+  namespace = new MockDurableObjectNamespace(),
+  queue = new MockQueue()
+): Env {
   return {
     GITHUB_APP_ID: "1",
     GITHUB_PRIVATE_KEY: "unused",
     ARTICLES_BUCKET: bucket as unknown as R2Bucket,
-    REPO_SYNC_STATE: namespace as unknown as DurableObjectNamespace
+    REPO_SYNC_STATE: namespace as unknown as DurableObjectNamespace,
+    ARTICLE_RENDER_QUEUE: queue as unknown as Queue
   };
 }
 
-function message(): RepoSyncQueueMessage {
+function message(): RepoSyncRepositoryQueueMessage {
   return {
     repositoryId: 42,
     ownerLogin: "octo",
@@ -100,6 +121,10 @@ function message(): RepoSyncQueueMessage {
     targetBranch: "main",
     desiredState: "active"
   };
+}
+
+function isRebuildRepositoryChunkMessage(message: RepoSyncQueueMessage): message is RebuildRepositoryChunkQueueMessage {
+  return "type" in message && message.type === "rebuild_repository_chunk";
 }
 
 describe("article renderer", () => {
@@ -261,5 +286,161 @@ describe("article renderer", () => {
 
     expect(retry).toHaveBeenCalledWith({ delaySeconds: 30 });
     expect(github.createInstallationAccessToken).not.toHaveBeenCalled();
+  });
+
+  it("enqueues rebuild repository chunks from the current default branch without touching R2 or sync state", async () => {
+    const bucket = new MockR2Bucket();
+    const stub = new MockRepoSyncStub();
+    const queue = new MockQueue();
+    vi.mocked(github.fetchDefaultBranchHead).mockResolvedValueOnce("fresh-head");
+    vi.mocked(github.listArticleFilesAtCommit).mockResolvedValueOnce([
+      {
+        date: "2026-05-04",
+        slug: "updated",
+        path: "articles/2026-05-04/updated/index.md"
+      }
+    ]);
+
+    await rebuildRepositoryMessage(
+      {
+        type: "rebuild_repository",
+        repositoryId: 42,
+        ownerLogin: "octo",
+        repoName: "articles",
+        installationId: 123,
+        targetBranch: "main"
+      },
+      env(bucket, new MockDurableObjectNamespace(stub), queue)
+    );
+
+    expect(github.createInstallationAccessToken).toHaveBeenCalledWith(expect.objectContaining({ GITHUB_APP_ID: "1" }), 123);
+    expect(github.fetchDefaultBranchHead).toHaveBeenCalledWith("octo", "articles", "main", "token");
+    expect(github.listArticleFilesAtCommit).toHaveBeenCalledWith("octo", "articles", "fresh-head", "token");
+    expect(bucket.puts).toEqual([]);
+    expect(queue.messages).toEqual([
+      {
+        type: "rebuild_repository_chunk",
+        repositoryId: 42,
+        ownerLogin: "octo",
+        repoName: "articles",
+        installationId: 123,
+        targetBranch: "main",
+        targetCommit: "fresh-head",
+        articles: [
+          {
+            date: "2026-05-04",
+            slug: "updated",
+            path: "articles/2026-05-04/updated/index.md"
+          }
+        ]
+      }
+    ]);
+    expect(stub.completed).toBeUndefined();
+    expect(stub.failed).toBeUndefined();
+  });
+
+  it("splits rebuild repository chunks into at most 100 articles", async () => {
+    const queue = new MockQueue();
+    const articles = Array.from({ length: 101 }, (_, index): ArticlePath => {
+      const day = String((index % 28) + 1).padStart(2, "0");
+      const slug = `article-${String(index + 1).padStart(3, "0")}`;
+      return {
+        date: `2026-05-${day}`,
+        slug,
+        path: `articles/2026-05-${day}/${slug}/index.md`
+      };
+    });
+    vi.mocked(github.fetchDefaultBranchHead).mockResolvedValueOnce("fresh-head");
+    vi.mocked(github.listArticleFilesAtCommit).mockResolvedValueOnce(articles);
+
+    await rebuildRepositoryMessage(
+      {
+        type: "rebuild_repository",
+        repositoryId: 42,
+        ownerLogin: "octo",
+        repoName: "articles",
+        installationId: 123,
+        targetBranch: "main"
+      },
+      env(new MockR2Bucket(), new MockDurableObjectNamespace(), queue)
+    );
+
+    expect(queue.messages).toHaveLength(2);
+    expect(queue.messages.map((message) => (isRebuildRepositoryChunkMessage(message) ? message.articles.length : 0))).toEqual([100, 1]);
+    expect(queue.messages.every((message) => isRebuildRepositoryChunkMessage(message) && message.targetCommit === "fresh-head")).toBe(true);
+  });
+
+  it("splits rebuild repository chunks below the queue message size limit", async () => {
+    const queue = new MockQueue();
+    const articles = Array.from({ length: 100 }, (_, index): ArticlePath => {
+      const slug = `${String(index).padStart(3, "0")}-${"x".repeat(1600)}`;
+      return {
+        date: "2026-05-04",
+        slug,
+        path: `articles/2026-05-04/${slug}/index.md`
+      };
+    });
+    vi.mocked(github.fetchDefaultBranchHead).mockResolvedValueOnce("fresh-head");
+    vi.mocked(github.listArticleFilesAtCommit).mockResolvedValueOnce(articles);
+
+    await rebuildRepositoryMessage(
+      {
+        type: "rebuild_repository",
+        repositoryId: 42,
+        ownerLogin: "octo",
+        repoName: "articles",
+        installationId: 123,
+        targetBranch: "main"
+      },
+      env(new MockR2Bucket(), new MockDurableObjectNamespace(), queue)
+    );
+
+    expect(queue.messages.length).toBeGreaterThan(1);
+    for (const message of queue.messages) {
+      expect(isRebuildRepositoryChunkMessage(message)).toBe(true);
+      expect(new TextEncoder().encode(JSON.stringify(message)).byteLength).toBeLessThanOrEqual(128 * 1024);
+    }
+  });
+
+  it("rebuilds only the articles in a repository chunk", async () => {
+    const bucket = new MockR2Bucket();
+
+    await rebuildRepositoryChunkMessage(
+      {
+        type: "rebuild_repository_chunk",
+        repositoryId: 42,
+        ownerLogin: "octo",
+        repoName: "articles",
+        installationId: 123,
+        targetBranch: "main",
+        targetCommit: "fixed-head",
+        articles: [
+          {
+            date: "2026-05-04",
+            slug: "updated",
+            path: "articles/2026-05-04/updated/index.md"
+          }
+        ]
+      },
+      env(bucket)
+    );
+
+    expect(github.createInstallationAccessToken).toHaveBeenCalledWith(expect.objectContaining({ GITHUB_APP_ID: "1" }), 123);
+    expect(github.fetchDefaultBranchHead).not.toHaveBeenCalled();
+    expect(github.listArticleFilesAtCommit).not.toHaveBeenCalled();
+    expect(github.fetchMarkdownAtCommit).toHaveBeenCalledWith(
+      "octo",
+      "articles",
+      "articles/2026-05-04/updated/index.md",
+      "fixed-head",
+      "token"
+    );
+    expect(bucket.puts).toEqual([
+      {
+        key: "gh/octo/articles/2026-05-04/updated/index.html",
+        value: '<h1 id="articles2026-05-04updatedindexmd">articles/2026-05-04/updated/index.md</h1>',
+        contentType: "text/html; charset=utf-8"
+      }
+    ]);
   });
 });
