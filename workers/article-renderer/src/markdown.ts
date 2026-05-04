@@ -1,5 +1,6 @@
 import type { Element, Root } from "hast";
 import rehypeHighlight from "rehype-highlight";
+import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema, type Options as SanitizeSchema } from "rehype-sanitize";
 import rehypeSlug from "rehype-slug";
 import rehypeStringify from "rehype-stringify";
@@ -129,6 +130,7 @@ const sanitizeSchema: SanitizeSchema = {
     "br",
     "code",
     "del",
+    "details",
     "em",
     "h1",
     "h2",
@@ -145,6 +147,7 @@ const sanitizeSchema: SanitizeSchema = {
     "section",
     "span",
     "strong",
+    "summary",
     "sup",
     "table",
     "tbody",
@@ -159,6 +162,7 @@ const sanitizeSchema: SanitizeSchema = {
     "*": ["className", "id"],
     a: ["href", "id", "className", "ariaDescribedBy", "ariaLabel", "dataFootnoteRef", "dataFootnoteBackref"],
     code: ["className"],
+    details: ["open"],
     input: ["checked", "className", "disabled", "type"],
     li: ["className"],
     ol: ["className"],
@@ -183,7 +187,8 @@ export function convertMarkdownToHtmlFragment(markdown: string): string {
     unified()
       .use(remarkParse)
       .use(remarkGfm)
-      .use(remarkRehype)
+      .use(remarkRehype, { allowDangerousHtml: true })
+      .use(rehypeRaw)
       .use(rehypeSlug)
       .use(rehypeHighlight, { detect: false })
       .use(removeUnsafeUrls)

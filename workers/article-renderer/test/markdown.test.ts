@@ -34,7 +34,7 @@ describe("convertMarkdownToHtmlFragment", () => {
     expect(html).toContain("data-footnote-backref");
   });
 
-  it("sanitizes unsupported raw HTML instead of failing conversion", () => {
+  it("sanitizes raw HTML instead of failing conversion", () => {
     const html = convertMarkdownToHtmlFragment([
       "before",
       "",
@@ -46,13 +46,13 @@ describe("convertMarkdownToHtmlFragment", () => {
     ].join("\n"));
 
     expect(html).toContain("<p>before</p>");
-    expect(html).toContain("<p>middle raw</p>");
+    expect(html).toContain("<p>middle <span>raw</span></p>");
     expect(html).toContain("<p>after</p>");
     expect(html).not.toContain("<script>");
     expect(html).not.toContain("onclick");
   });
 
-  it("drops unsupported raw HTML blocks and strips unsupported inline attributes", () => {
+  it("drops unsupported raw HTML and strips unsupported attributes", () => {
     const html = convertMarkdownToHtmlFragment([
       "<iframe src=\"https://example.com/embed\">embed</iframe>",
       "",
@@ -61,17 +61,53 @@ describe("convertMarkdownToHtmlFragment", () => {
       "<section hidden aria-label=\"note\">section text</section>"
     ].join("\n"));
 
-    expect(html).toBe("<p>inline</p>");
-    expect(html).not.toContain("embed");
-    expect(html).not.toContain("section text");
+    expect(html).toBe("embed\n<p><span>inline</span></p>\n<section>section text</section>");
+    expect(html).toContain("<span>inline</span>");
+    expect(html).toContain("<section>section text</section>");
     expect(html).not.toContain("<iframe");
-    expect(html).not.toContain("<span");
-    expect(html).not.toContain("<section");
     expect(html).not.toContain("style=");
     expect(html).not.toContain("onclick=");
     expect(html).not.toContain("data-extra=");
     expect(html).not.toContain("hidden");
     expect(html).not.toContain("aria-label");
+  });
+
+  it("keeps GitHub-style details and summary disclosure blocks", () => {
+    const html = convertMarkdownToHtmlFragment([
+      "<details open>",
+      "<summary>Read more</summary>",
+      "",
+      "Hidden **markdown** body.",
+      "",
+      "</details>"
+    ].join("\n"));
+
+    expect(html).toContain("<details open>");
+    expect(html).toContain("<summary>Read more</summary>");
+    expect(html).toContain("<p>Hidden <strong>markdown</strong> body.</p>");
+    expect(html).toContain("</details>");
+  });
+
+  it("strips unsafe disclosure attributes and unsupported raw HTML", () => {
+    const html = convertMarkdownToHtmlFragment([
+      "<details onclick=\"alert(1)\">",
+      "<summary>Unsafe wrapper</summary>",
+      "",
+      "body",
+      "",
+      "</details>",
+      "",
+      "<summary onclick=\"alert(1)\">Unsafe summary</summary>",
+      "",
+      "<script>alert(1)</script>"
+    ].join("\n"));
+
+    expect(html).toContain("<p>body</p>");
+    expect(html).toContain("<details>");
+    expect(html).toContain("<summary>Unsafe wrapper</summary>");
+    expect(html).toContain("<summary>Unsafe summary</summary>");
+    expect(html).not.toContain("<script>");
+    expect(html).not.toContain("onclick");
   });
 
   it("keeps only allowed URL protocols", () => {
