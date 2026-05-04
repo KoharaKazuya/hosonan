@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
+import { promisify } from "node:util";
 
 const API_BASE = "https://api.cloudflare.com/client/v4";
 const DEFAULT_QUEUE_NAME = "hosonan-article-render";
-const DEFAULT_D1_DATABASE_NAME = "hosonan-github-registry";
+const DEFAULT_D1_BINDING = "GITHUB_REGISTRY";
+const GITHUB_WEBHOOK_CONFIG = "workers/github-webhook/wrangler.jsonc";
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const execFileAsync = promisify(execFile);
 
 const COUNT_SQL = `
 SELECT COUNT(*) AS count
@@ -35,35 +39,37 @@ ORDER BY r.repository_id
 const USAGE = `Usage: npm run rebuild:articles -- [--dry-run]
 
 Environment:
-  CLOUDFLARE_ACCOUNT_ID or CF_ACCOUNT_ID
-  CLOUDFLARE_API_TOKEN or CF_API_TOKEN
-  HOSONAN_ARTICLE_RENDER_QUEUE_ID or CLOUDFLARE_QUEUE_ID
-  HOSONAN_GITHUB_REGISTRY_DATABASE_ID or CLOUDFLARE_D1_DATABASE_ID
+  Optional: CLOUDFLARE_ACCOUNT_ID or CF_ACCOUNT_ID
+
+Requirements:
+  Log in to Wrangler before running this script.
 `;
 
 if (isMainModule()) {
   try {
-    await main(process.argv.slice(2), process.env, console, fetch);
+    await main(process.argv.slice(2), process.env, console, { fetchImpl: fetch, runCommand: runWranglerCommand });
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(1);
   }
 }
 
-export async function main(argv, env, io, fetchImpl) {
+export async function main(argv, env, io, options = {}) {
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const runCommand = options.runCommand ?? runWranglerCommand;
   const args = new Set(argv);
   if (args.has("--help") || args.has("-h")) {
     io.log(USAGE);
     return;
   }
 
-  const accountId = requiredEnv(env, "CLOUDFLARE_ACCOUNT_ID", "CF_ACCOUNT_ID");
-  const token = requiredEnv(env, "CLOUDFLARE_API_TOKEN", "CF_API_TOKEN");
-  const databaseId = await resolveD1DatabaseId(accountId, token, env, fetchImpl);
-  const repositories = await listActiveRepositories(accountId, token, databaseId, fetchImpl);
+  const config = await readGitHubWebhookConfig();
+  const d1Binding = config.d1Binding ?? DEFAULT_D1_BINDING;
+  const queueName = config.queueName ?? DEFAULT_QUEUE_NAME;
+  const repositories = await listActiveRepositories(runCommand, d1Binding);
 
   if (args.has("--dry-run")) {
-    const count = await countActiveRepositories(accountId, token, databaseId, fetchImpl);
+    const count = await countActiveRepositories(runCommand, d1Binding);
     io.log(`対象リポジトリ数: ${count}`);
     for (const repository of repositories) {
       io.log(
@@ -73,9 +79,10 @@ export async function main(argv, env, io, fetchImpl) {
     return;
   }
 
+  const { accountId, token } = await resolveCloudflareCredentials(env, runCommand);
   const queueId =
     optionalEnv(env, "HOSONAN_ARTICLE_RENDER_QUEUE_ID", "CLOUDFLARE_QUEUE_ID") ??
-    (await findQueueId(accountId, token, DEFAULT_QUEUE_NAME, fetchImpl));
+    (await findQueueId(accountId, token, queueName, fetchImpl));
 
   for (const repository of repositories) {
     try {
@@ -89,7 +96,7 @@ export async function main(argv, env, io, fetchImpl) {
     io.log(`queued rebuild_repository for ${repository.ownerLogin}/${repository.repoName}`);
   }
 
-  io.log(`queued ${repositories.length} rebuild_repository messages to ${DEFAULT_QUEUE_NAME}`);
+  io.log(`queued ${repositories.length} rebuild_repository messages to ${queueName}`);
 }
 
 function isMainModule() {
@@ -106,32 +113,140 @@ function optionalEnv(env, ...names) {
   return undefined;
 }
 
-function requiredEnv(env, ...names) {
-  const value = optionalEnv(env, ...names);
-  if (!value) {
-    throw new Error(`Missing required environment variable: ${names.join(" or ")}`);
-  }
-  return value;
-}
-
-async function resolveD1DatabaseId(accountId, token, env, fetchImpl) {
-  return (
-    optionalEnv(env, "HOSONAN_GITHUB_REGISTRY_DATABASE_ID", "CLOUDFLARE_D1_DATABASE_ID") ??
-    (await readGitHubWebhookConfig()).d1DatabaseId ??
-    (await findD1DatabaseId(accountId, token, DEFAULT_D1_DATABASE_NAME, fetchImpl))
-  );
-}
-
 async function readGitHubWebhookConfig() {
-  const raw = await readFile(resolve(ROOT, "workers/github-webhook/wrangler.jsonc"), "utf8");
+  const raw = await readFile(resolve(ROOT, GITHUB_WEBHOOK_CONFIG), "utf8");
   return {
-    d1DatabaseId: matchJsoncString(raw, "database_id")
+    d1Binding: matchJsoncString(raw, "binding", "d1_databases"),
+    queueName: matchJsoncString(raw, "queue", "producers")
   };
 }
 
-function matchJsoncString(raw, key) {
-  const match = new RegExp(`"${key}"\\s*:\\s*"([^"]+)"`).exec(raw);
+function matchJsoncString(raw, key, afterKey) {
+  const start = afterKey ? raw.indexOf(`"${afterKey}"`) : 0;
+  if (start < 0) {
+    return undefined;
+  }
+  const source = raw.slice(start);
+  const match = new RegExp(`"${key}"\\s*:\\s*"([^"]+)"`).exec(source);
   return match?.[1];
+}
+
+async function runWranglerCommand(args) {
+  const { stdout } = await execFileAsync("npx", ["wrangler", ...args], {
+    cwd: ROOT,
+    maxBuffer: 10 * 1024 * 1024
+  });
+  return stdout;
+}
+
+async function runD1Query(runCommand, sql, d1Binding = DEFAULT_D1_BINDING) {
+  const stdout = await runCommand([
+    "d1",
+    "execute",
+    d1Binding,
+    "--config",
+    GITHUB_WEBHOOK_CONFIG,
+    "--remote",
+    "--json",
+    "--command",
+    sql
+  ]);
+  return parseWranglerD1Rows(stdout);
+}
+
+function parseWranglerD1Rows(stdout) {
+  const body = parseJson(stdout, "Wrangler D1 query");
+  const firstResult = Array.isArray(body) ? body[0] : Array.isArray(body.result) ? body.result[0] : body.result ?? body;
+  return firstResult?.results ?? firstResult?.result ?? body.results ?? [];
+}
+
+async function resolveCloudflareCredentials(env, runCommand) {
+  const token = await resolveWranglerBearerToken(runCommand);
+  const accountId = optionalEnv(env, "CLOUDFLARE_ACCOUNT_ID", "CF_ACCOUNT_ID") ?? (await resolveWranglerAccountId(runCommand));
+  return { accountId, token };
+}
+
+async function resolveWranglerBearerToken(runCommand) {
+  let stdout;
+  try {
+    stdout = await runCommand(["auth", "token", "--json"]);
+  } catch (error) {
+    throw new Error(`Wrangler is not logged in or could not provide an auth token: ${errorMessage(error)}`);
+  }
+
+  const body = parseJson(stdout, "wrangler auth token --json");
+  const type = body.type ?? body.auth_type ?? body.token_type;
+  if (type === "api_key") {
+    throw new Error("wrangler auth token returned api_key credentials, which cannot be used as a Bearer token. Run wrangler login.");
+  }
+
+  const token = body.oauth ?? body.api_token ?? body.token ?? body.access_token;
+  if (!token) {
+    throw new Error("wrangler auth token --json did not return an oauth or api_token value. Run wrangler login.");
+  }
+  return token;
+}
+
+async function resolveWranglerAccountId(runCommand) {
+  let stdout;
+  try {
+    stdout = await runCommand(["whoami", "--json"]);
+  } catch (error) {
+    throw new Error(`Failed to resolve Cloudflare account id from wrangler whoami --json: ${errorMessage(error)}`);
+  }
+
+  const body = parseJson(stdout, "wrangler whoami --json");
+  const accounts = normalizeWranglerAccounts(body);
+  if (accounts.length === 1 && accounts[0].id) {
+    return accounts[0].id;
+  }
+  if (accounts.length > 1) {
+    throw new Error("Multiple Cloudflare accounts are available. Set CLOUDFLARE_ACCOUNT_ID or CF_ACCOUNT_ID.");
+  }
+  throw new Error("wrangler whoami --json did not return a Cloudflare account id. Set CLOUDFLARE_ACCOUNT_ID or CF_ACCOUNT_ID.");
+}
+
+function normalizeWranglerAccounts(body) {
+  if (Array.isArray(body)) {
+    return body
+      .map((account) => ({
+        id: account?.id ?? account?.account_id,
+        name: account?.name ?? account?.account_name
+      }))
+      .filter((account) => account.id);
+  }
+
+  if (body.id || body.account_id) {
+    return [{ id: body.id ?? body.account_id, name: body.name ?? body.account_name }];
+  }
+
+  const candidates = body.accounts ?? body.account ?? body.result?.accounts ?? body.result?.account ?? [];
+  const accounts = Array.isArray(candidates)
+    ? candidates
+    : Object.entries(candidates).map(([id, value]) => {
+        if (typeof value === "string") {
+          return { id, name: value };
+        }
+        return { ...value, id: value?.id ?? value?.account_id ?? id };
+      });
+  return accounts
+    .map((account) => ({
+      id: account?.id ?? account?.account_id,
+      name: account?.name ?? account?.account_name
+    }))
+    .filter((account) => account.id);
+}
+
+function parseJson(stdout, label) {
+  try {
+    return JSON.parse(stdout);
+  } catch (error) {
+    throw new Error(`${label} returned invalid JSON: ${errorMessage(error)}`);
+  }
+}
+
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function cfFetch(accountId, token, path, init = {}, fetchImpl = fetch) {
@@ -156,28 +271,14 @@ export async function findQueueId(accountId, token, queueName, fetchImpl = fetch
   const queue = (body.result ?? []).find((item) => item.queue_name === queueName || item.name === queueName);
   const id = queue?.queue_id ?? queue?.id;
   if (!id) {
-    throw new Error(`Queue id for ${queueName} was not found. Set HOSONAN_ARTICLE_RENDER_QUEUE_ID.`);
+    throw new Error(`Queue id for ${queueName} was not found.`);
   }
   return id;
 }
 
-export async function findD1DatabaseId(accountId, token, databaseName, fetchImpl = fetch) {
-  const body = await cfFetch(accountId, token, `/d1/database?name=${encodeURIComponent(databaseName)}`, {}, fetchImpl);
-  const database = (body.result ?? []).find((item) => item.name === databaseName);
-  const id = database?.uuid ?? database?.id;
-  if (!id) {
-    throw new Error(`D1 database id for ${databaseName} was not found. Set HOSONAN_GITHUB_REGISTRY_DATABASE_ID.`);
-  }
-  return id;
-}
-
-export async function countActiveRepositories(accountId, token, databaseId, fetchImpl = fetch) {
-  const body = await cfFetch(accountId, token, `/d1/database/${databaseId}/query`, {
-    method: "POST",
-    body: JSON.stringify({ sql: COUNT_SQL })
-  }, fetchImpl);
-  const firstResult = Array.isArray(body.result) ? body.result[0] : body.result;
-  const row = firstResult?.results?.[0] ?? firstResult?.result?.[0] ?? body.result?.[0];
+export async function countActiveRepositories(runCommand, d1Binding = DEFAULT_D1_BINDING) {
+  const rows = await runD1Query(runCommand, COUNT_SQL, d1Binding);
+  const row = rows[0];
   const count = Number(row?.count ?? row?.COUNT ?? 0);
   if (!Number.isFinite(count)) {
     throw new Error("D1 count query did not return a numeric count.");
@@ -185,13 +286,8 @@ export async function countActiveRepositories(accountId, token, databaseId, fetc
   return count;
 }
 
-export async function listActiveRepositories(accountId, token, databaseId, fetchImpl = fetch) {
-  const body = await cfFetch(accountId, token, `/d1/database/${databaseId}/query`, {
-    method: "POST",
-    body: JSON.stringify({ sql: ACTIVE_REPOSITORIES_SQL })
-  }, fetchImpl);
-  const firstResult = Array.isArray(body.result) ? body.result[0] : body.result;
-  const rows = firstResult?.results ?? firstResult?.result ?? [];
+export async function listActiveRepositories(runCommand, d1Binding = DEFAULT_D1_BINDING) {
+  const rows = await runD1Query(runCommand, ACTIVE_REPOSITORIES_SQL, d1Binding);
   return rows.map((row) => ({
     repositoryId: Number(row.repositoryId ?? row.repository_id),
     ownerLogin: String(row.ownerLogin ?? row.owner_login),
