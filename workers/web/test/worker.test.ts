@@ -140,6 +140,7 @@ describe("site worker", () => {
     expect(html.match(/class="article-card"/g)).toHaveLength(10);
     expect(html.indexOf("Post 11")).toBeLessThan(html.indexOf("Post 10"));
     expect(html).toContain('<a class="article-card" href="/gh/octo/articles/2026-05-12/post-11/">');
+    expect(html).toContain("/*! kiso.css v1.2.4 | MIT License | https://github.com/tak-dcxi/kiso.css */");
     expect(html).toContain('src="https://raw.githubusercontent.com/octo/articles/commit-11/articles/2026-05-12/post-11/thumbnail.webp"');
     expect(html).toContain("<h2>Post 11</h2>");
     expect(html).toContain("-webkit-line-clamp:3");
@@ -172,10 +173,11 @@ describe("site worker", () => {
       new Map([["gh/octo/articles/2026-05-02/example/index.html", ["<h1>Hel", "lo</h1>", "<p>body</p>"]]])
     );
     const response = await worker.fetch(request("/gh/octo/articles/2026-05-02/example/"), env(bucket));
+    const html = await response.text();
 
-    await expect(response.text()).resolves.toMatch(
-      /<main class="article">\n<h1>Hello<\/h1><p>body<\/p>\n<\/main>/
-    );
+    expect(html).toContain("/*! kiso.css v1.2.4 | MIT License | https://github.com/tak-dcxi/kiso.css */");
+    expect(html).toContain(".article :where(ul,ol){padding-inline-start:1.5em;list-style:revert}");
+    expect(html).toMatch(/<main class="article">\n<h1>Hello<\/h1><p>body<\/p>\n<\/main>/);
   });
 
   it("normalizes directory and index URLs to the same R2 key and cache key", async () => {

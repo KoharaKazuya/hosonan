@@ -4,14 +4,18 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "generate:kiso-css": "node scripts/generate-kiso-css.mjs",
+    "prebuild": "npm run generate:kiso-css",
     "build": "npm run types:check && tsc --noEmit",
     "deploy": "npm run build && wrangler deploy",
+    "pretest": "npm run generate:kiso-css",
     "types": "wrangler types worker-configuration.d.ts",
     "types:check": "wrangler types worker-configuration.d.ts --check",
     "test": "vitest run"
   },
   "dependencies": {
-    "@hosonan/shared": "0.1.0"
+    "@hosonan/shared": "0.1.0",
+    "kiso.css": "^1.2.4"
   },
   "devDependencies": {
     "@types/node": "^24.10.1",

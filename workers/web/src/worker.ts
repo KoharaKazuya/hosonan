@@ -1,7 +1,37 @@
 import { escapeHtml, parseServedArticlePath, type ServedArticlePath, type StoredArticle } from "@hosonan/shared";
+import { KISO_CSS } from "./kiso-css";
 
 const CACHE_TTL_SECONDS = 300;
 const HOME_ARTICLE_LIMIT = 10;
+
+const ARTICLE_PAGE_CSS = `
+:root{color-scheme:light dark;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.7;background:#f7f7f8;color:#1f2328}
+.article{width:min(100% - 32px,840px);margin:0 auto;padding:48px 0 72px}
+.article :first-child{margin-top:0}
+.article :where(p,blockquote,figure,pre,ul,ol,dl,table){margin-block:1em}
+.article :where(ul,ol){padding-inline-start:1.5em;list-style:revert}
+.article pre{overflow:auto;padding:16px;border-radius:6px;background:#24292f;color:#f6f8fa}
+.article code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.article img,.article table{max-width:100%}
+`;
+
+const HOME_PAGE_CSS = `
+:root{color-scheme:light dark;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.6;background:#f7f7f8;color:#1f2328}
+.home{width:min(100% - 32px,1040px);margin:0 auto;padding:40px 0 64px}
+.home h1{margin:0 0 24px;font-size:2rem;line-height:1.2}
+.article-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:18px}
+.article-card{overflow:hidden;border:1px solid #d0d7de;border-radius:8px;background:#fff;color:inherit;text-decoration:none}
+.article-card:focus-visible{outline:3px solid #0969da;outline-offset:2px}
+.article-card img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;background:#eaeef2}
+.article-card-body{padding:14px 16px 16px}
+.article-card h2{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;margin:0 0 10px;font-size:1.05rem;line-height:1.35}
+.article-meta{display:flex;flex-wrap:wrap;gap:6px 10px;margin:0;color:#57606a;font-size:.9rem}
+@media (prefers-color-scheme:dark){
+:root{background:#0d1117;color:#f0f6fc}
+.article-card{border-color:#30363d;background:#161b22}
+.article-meta{color:#8b949e}
+}
+`;
 
 export interface ViewerContext {
   request: Request;
@@ -16,15 +46,7 @@ export function buildHtmlDocumentPrefix(article: ServedArticlePath): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${title}</title>
-<style>
-:root{color-scheme:light dark;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.7;background:#f7f7f8;color:#1f2328}
-body{margin:0}
-.article{box-sizing:border-box;width:min(100% - 32px,840px);margin:0 auto;padding:48px 0 72px}
-.article :first-child{margin-top:0}
-.article pre{overflow:auto;padding:16px;border-radius:6px;background:#24292f;color:#f6f8fa}
-.article code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-.article img,.article table{max-width:100%}
-</style>
+${buildInlineStyle(ARTICLE_PAGE_CSS)}
 </head>
 <body>
 <main class="article">
@@ -129,24 +151,7 @@ function buildHomePage(articles: StoredArticle[]): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Hosonan</title>
-<style>
-:root{color-scheme:light dark;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.6;background:#f7f7f8;color:#1f2328}
-body{margin:0}
-.home{box-sizing:border-box;width:min(100% - 32px,1040px);margin:0 auto;padding:40px 0 64px}
-.home h1{margin:0 0 24px;font-size:2rem;line-height:1.2}
-.article-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:18px}
-.article-card{overflow:hidden;border:1px solid #d0d7de;border-radius:8px;background:#fff;color:inherit;text-decoration:none}
-.article-card:focus-visible{outline:3px solid #0969da;outline-offset:2px}
-.article-card img{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;background:#eaeef2}
-.article-card-body{padding:14px 16px 16px}
-.article-card h2{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;margin:0 0 10px;font-size:1.05rem;line-height:1.35}
-.article-meta{display:flex;flex-wrap:wrap;gap:6px 10px;margin:0;color:#57606a;font-size:.9rem}
-@media (prefers-color-scheme:dark){
-:root{background:#0d1117;color:#f0f6fc}
-.article-card{border-color:#30363d;background:#161b22}
-.article-meta{color:#8b949e}
-}
-</style>
+${buildInlineStyle(HOME_PAGE_CSS)}
 </head>
 <body>
 <main class="home">
@@ -167,6 +172,13 @@ function buildArticleCard(article: StoredArticle): string {
 <p class="article-meta"><time datetime="${escapeHtml(article.created_at)}">${escapeHtml(article.created_at)}</time><span>${escapeHtml(`${article.owner_login}/${article.repo_name}`)}</span></p>
 </div>
 </a>`;
+}
+
+function buildInlineStyle(pageCss: string): string {
+  return `<style>
+${KISO_CSS}
+${pageCss.trim()}
+</style>`;
 }
 
 function thumbnailRawUrl(article: Pick<StoredArticle, "owner_login" | "repo_name" | "synced_commit" | "article_path">): string {
