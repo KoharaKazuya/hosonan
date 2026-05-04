@@ -678,16 +678,6 @@ describe("worker webhook", () => {
     expect(registry.repositories.get(42)?.full_name).toBe("octo/articles");
   });
 
-  it("records meta webhook deletion events", async () => {
-    const registry = new MockD1Database();
-    const response = await worker.fetch(
-      await request({ hook_id: 99 }, "meta"),
-      env(new MockQueue(), new MockDurableObjectNamespace(), registry)
-    );
-
-    expect(response.status).toBe(200);
-    expect(registry.deliveryRows[0]).toMatchObject({ status: "hook_deleted" });
-  });
 });
 
 describe("RepoSyncStateDurableObject", () => {

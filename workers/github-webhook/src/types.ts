@@ -75,7 +75,3 @@ export interface GitHubInstallationTargetPayload {
     };
   };
 }
-
-export interface GitHubMetaPayload {
-  hook_id?: number;
-}

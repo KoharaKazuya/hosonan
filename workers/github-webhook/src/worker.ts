@@ -12,7 +12,6 @@ import type {
   GitHubInstallationEventPayload,
   GitHubInstallationRepositoriesPayload,
   GitHubInstallationTargetPayload,
-  GitHubMetaPayload,
   GitHubPushPayload,
   GitHubRepositoryEventPayload,
   GitHubRepositoryPayload
@@ -241,23 +240,6 @@ async function handleInstallationTarget(payload: GitHubInstallationTargetPayload
     await updateRepositoryOwnerLogin(env, payload.installation.id, previousLogin, payload.account.login);
   }
   return Response.json({ handled: true, event: "installation_target", action: payload.action });
-}
-
-async function handleMeta(payload: GitHubMetaPayload, env: Env): Promise<Response> {
-  await env.GITHUB_REGISTRY.prepare(
-    "INSERT INTO webhook_deliveries (delivery_id, event, action, target_id, status, created_at, completed_at) VALUES (?, ?, ?, ?, ?, ?, ?)"
-  )
-    .bind(
-      `meta:${payload.hook_id ?? "unknown"}:${crypto.randomUUID()}`,
-      "meta",
-      "deleted",
-      payload.hook_id ?? null,
-      "hook_deleted",
-      new Date().toISOString(),
-      new Date().toISOString()
-    )
-    .run();
-  return Response.json({ handled: true, event: "meta" });
 }
 
 function visibility(repository: GitHubRepositoryPayload): string {
@@ -625,9 +607,6 @@ export default {
           break;
         case "installation_target":
           response = await handleInstallationTarget(payload as GitHubInstallationTargetPayload, env);
-          break;
-        case "meta":
-          response = await handleMeta(payload as GitHubMetaPayload, env);
           break;
         default:
           response = new Response("ignored\n", { status: 202 });
