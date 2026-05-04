@@ -33,9 +33,44 @@ class MockCache {
   }
 }
 
-function env(bucket: { get(key: string): Promise<R2ObjectBody | null> }): Env {
+class MockD1PreparedStatement {
+  values: unknown[] = [];
+
+  constructor(private readonly db: MockD1Database) {}
+
+  bind(...values: unknown[]): MockD1PreparedStatement {
+    this.values = values;
+    return this;
+  }
+
+  async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
+    return {
+      success: true,
+      meta: { duration: 0, size_after: 0, rows_read: 0, rows_written: 0, last_row_id: 0, changed_db: false, changes: 0 },
+      results: this.db.select(Number(this.values[0])) as T[]
+    };
+  }
+}
+
+class MockD1Database {
+  constructor(readonly articles: Array<Record<string, unknown>> = []) {}
+
+  prepare(_query: string): MockD1PreparedStatement {
+    return new MockD1PreparedStatement(this);
+  }
+
+  select(limit: number): Array<Record<string, unknown>> {
+    return this.articles
+      .filter((article) => article.status === "active")
+      .sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)))
+      .slice(0, limit);
+  }
+}
+
+function env(bucket: { get(key: string): Promise<R2ObjectBody | null> }, registry = new MockD1Database()): Env {
   return {
-    ARTICLES_BUCKET: bucket as unknown as R2Bucket
+    ARTICLES_BUCKET: bucket as unknown as R2Bucket,
+    GITHUB_REGISTRY: registry as unknown as D1Database
   };
 }
 
@@ -56,12 +91,67 @@ function streamFromChunks(chunks: string[]): ReadableStream<Uint8Array> {
   });
 }
 
+function article(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    repository_id: 42,
+    owner_login: "octo",
+    repo_name: "articles",
+    article_path: "articles/2026-05-02/example/index.md",
+    slug: "example",
+    title: "Example",
+    created_at: "2026-05-02",
+    canonical_path: "/gh/octo/articles/2026-05-02/example/",
+    r2_key: "gh/octo/articles/2026-05-02/example/index.html",
+    status: "active",
+    synced_commit: "abc123",
+    updated_at: "2026-05-02T00:00:00.000Z",
+    ...overrides
+  };
+}
+
 describe("site worker", () => {
   let cache: MockCache;
 
   beforeEach(() => {
     cache = new MockCache();
     vi.stubGlobal("caches", { default: cache });
+  });
+
+  it("returns the home page with at most 10 active article cards ordered by latest date", async () => {
+    const articles = Array.from({ length: 12 }, (_, index) =>
+      article({
+        repository_id: index,
+        article_path: `articles/2026-05-${String(index + 1).padStart(2, "0")}/post-${index}/index.md`,
+        slug: `post-${index}`,
+        title: `Post ${index}`,
+        created_at: `2026-05-${String(index + 1).padStart(2, "0")}`,
+        canonical_path: `/gh/octo/articles/2026-05-${String(index + 1).padStart(2, "0")}/post-${index}/`,
+        r2_key: `gh/octo/articles/2026-05-${String(index + 1).padStart(2, "0")}/post-${index}/index.html`,
+        synced_commit: `commit-${index}`
+      })
+    );
+    articles.push(article({ title: "Inactive", status: "inactive", created_at: "2026-06-01" }));
+
+    const response = await worker.fetch(request("/"), env(new MockR2Bucket(), new MockD1Database(articles)));
+    const html = await response.text();
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+    expect(html.match(/class="article-card"/g)).toHaveLength(10);
+    expect(html.indexOf("Post 11")).toBeLessThan(html.indexOf("Post 10"));
+    expect(html).toContain('<a class="article-card" href="/gh/octo/articles/2026-05-12/post-11/">');
+    expect(html).toContain('src="https://raw.githubusercontent.com/octo/articles/commit-11/articles/2026-05-12/post-11/thumbnail.webp"');
+    expect(html).toContain("<h2>Post 11</h2>");
+    expect(html).toContain('<time datetime="2026-05-12">2026-05-12</time>');
+    expect(html).toContain("<span>octo/articles</span>");
+    expect(html).not.toContain("Inactive");
+  });
+
+  it("supports HEAD for the home page without a response body", async () => {
+    const response = await worker.fetch(request("/", "HEAD"), env(new MockR2Bucket(), new MockD1Database([article()])));
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("");
   });
 
   it("returns a complete HTML document for stored article fragments", async () => {

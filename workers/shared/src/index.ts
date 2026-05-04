@@ -19,6 +19,21 @@ export interface ArticleIndexEntry extends ArticlePath {
   r2Key: string;
 }
 
+export interface StoredArticle {
+  repository_id: number;
+  owner_login: string;
+  repo_name: string;
+  article_path: string;
+  slug: string;
+  title: string;
+  created_at: string;
+  canonical_path: string;
+  r2_key: string;
+  status: string;
+  synced_commit: string;
+  updated_at: string;
+}
+
 export interface RepoSyncRepositoryQueueMessage {
   repositoryId: number;
   ownerLogin: string;
@@ -143,6 +158,10 @@ export function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+export function buildServedArticlePath(ownerLogin: string, repoName: string, article: Pick<ArticlePath, "date" | "slug">): string {
+  return `/gh/${encodeURIComponent(ownerLogin)}/${encodeURIComponent(repoName)}/${encodeURIComponent(article.date)}/${encodeURIComponent(article.slug)}/`;
 }
 
 function decodePathSegment(value: string): string | null {

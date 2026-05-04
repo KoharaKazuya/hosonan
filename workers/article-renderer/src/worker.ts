@@ -1,6 +1,7 @@
 import {
   ARTICLE_MARKDOWN_MAX_BYTES,
   buildArticleR2Key,
+  buildServedArticlePath,
   escapeHtml,
   matchArticleMarkdownPath,
   type ArticleIndexEntry,
@@ -22,7 +23,7 @@ import {
   listArticleFilesAtCommit,
   type GitHubChangedFile
 } from "./github";
-import { convertMarkdownToHtmlFragment } from "./markdown";
+import { convertMarkdownToHtmlFragment, extractMarkdownTitle } from "./markdown";
 
 const LEASE_EXTEND_WINDOW_MS = 2 * 60_000;
 const DEFAULT_RETRY_SECONDS = 60;
@@ -40,12 +41,16 @@ export async function renderArticleToR2(
   commitSha: string,
   token: string,
   env: Env
-): Promise<ArticleIndexEntry> {
+): Promise<RenderedArticle> {
   const metadata = await fetchFileMetadataAtCommit(ownerLogin, repoName, article.path, commitSha, token);
-  const html =
+  const markdown =
     metadata.size > ARTICLE_MARKDOWN_MAX_BYTES
-      ? oversizedMarkdownHtml(ownerLogin, repoName, article.path, commitSha)
-      : convertMarkdownToHtmlFragment(await fetchMarkdownAtCommit(ownerLogin, repoName, article.path, commitSha, token));
+      ? undefined
+      : await fetchMarkdownAtCommit(ownerLogin, repoName, article.path, commitSha, token);
+  const html = markdown
+    ? convertMarkdownToHtmlFragment(markdown)
+    : oversizedMarkdownHtml(ownerLogin, repoName, article.path, commitSha);
+  const title = markdown ? extractMarkdownTitle(markdown, article.slug) : article.slug;
   const key = r2Key(ownerLogin, repoName, article);
 
   await env.ARTICLES_BUCKET.put(key, html, {
@@ -54,7 +59,7 @@ export async function renderArticleToR2(
     }
   });
 
-  return { ...article, r2Key: key };
+  return { ...article, r2Key: key, title };
 }
 
 function oversizedMarkdownHtml(ownerLogin: string, repoName: string, path: string, commitSha: string): string {
@@ -101,7 +106,9 @@ export async function rebuildRepositoryChunkMessage(
   const rendered: ArticleIndexEntry[] = [];
 
   for (const article of message.articles) {
-    rendered.push(await renderArticleToR2(message.ownerLogin, message.repoName, article, message.targetCommit, token, env));
+    const result = await renderArticleToR2(message.ownerLogin, message.repoName, article, message.targetCommit, token, env);
+    await upsertArticleRecord(message.repositoryId, message.ownerLogin, message.repoName, result, message.targetCommit, env);
+    rendered.push(toArticleIndexEntry(result));
   }
 
   return rendered;
@@ -153,6 +160,7 @@ export async function syncClaimedRepository(
     if (previous) {
       await ensureLeaseFresh(claim, stub);
       await env.ARTICLES_BUCKET.delete(previous.r2Key);
+      await markArticleRecordStatus(claim.repositoryId, path, "deleted", env);
       nextIndex.delete(path);
     }
   }
@@ -160,7 +168,8 @@ export async function syncClaimedRepository(
   for (const article of touchedPaths.upserted) {
     await ensureLeaseFresh(claim, stub);
     const rendered = await renderArticleToR2(claim.ownerLogin, claim.repoName, article, claim.targetCommit, token, env);
-    nextIndex.set(article.path, rendered);
+    await upsertArticleRecord(claim.repositoryId, claim.ownerLogin, claim.repoName, rendered, claim.targetCommit, env);
+    nextIndex.set(article.path, toArticleIndexEntry(rendered));
   }
 
   return {
@@ -188,6 +197,11 @@ async function syncInactiveRepository(
     await ensureLeaseFresh(claim, stub);
     await env.ARTICLES_BUCKET.delete(article.r2Key);
   }
+  await markRepositoryArticleRecordsStatus(
+    claim.repositoryId,
+    claim.desiredState === "deleted" ? "deleted" : "inactive",
+    env
+  );
 
   return {
     syncedCommit: undefined,
@@ -210,17 +224,85 @@ async function fullScanSync(
     if (!latestPaths.has(previous.path)) {
       await ensureLeaseFresh(claim, stub);
       await env.ARTICLES_BUCKET.delete(previous.r2Key);
+      await markArticleRecordStatus(claim.repositoryId, previous.path, "deleted", env);
     }
   }
 
   for (const article of articles.sort(compareArticlePath)) {
     await ensureLeaseFresh(claim, stub);
-    nextIndex.push(await renderArticleToR2(claim.ownerLogin, claim.repoName, article, claim.targetCommit, token, env));
+    const rendered = await renderArticleToR2(claim.ownerLogin, claim.repoName, article, claim.targetCommit, token, env);
+    await upsertArticleRecord(claim.repositoryId, claim.ownerLogin, claim.repoName, rendered, claim.targetCommit, env);
+    nextIndex.push(toArticleIndexEntry(rendered));
   }
 
   return {
     syncedCommit: claim.targetCommit,
     articleIndex: nextIndex
+  };
+}
+
+async function upsertArticleRecord(
+  repositoryId: number,
+  ownerLogin: string,
+  repoName: string,
+  article: RenderedArticle,
+  syncedCommit: string,
+  env: Env
+): Promise<void> {
+  const now = new Date().toISOString();
+  await env.GITHUB_REGISTRY.prepare(
+    `INSERT INTO articles
+       (repository_id, owner_login, repo_name, article_path, slug, title, created_at, canonical_path, r2_key, status, synced_commit, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(repository_id, article_path) DO UPDATE SET
+       owner_login = excluded.owner_login,
+       repo_name = excluded.repo_name,
+       slug = excluded.slug,
+       title = excluded.title,
+       created_at = excluded.created_at,
+       canonical_path = excluded.canonical_path,
+       r2_key = excluded.r2_key,
+       status = excluded.status,
+       synced_commit = excluded.synced_commit,
+       updated_at = excluded.updated_at`
+  )
+    .bind(
+      repositoryId,
+      ownerLogin,
+      repoName,
+      article.path,
+      article.slug,
+      article.title,
+      article.date,
+      buildServedArticlePath(ownerLogin, repoName, article),
+      article.r2Key,
+      "active",
+      syncedCommit,
+      now
+    )
+    .run();
+}
+
+async function markArticleRecordStatus(repositoryId: number, articlePath: string, status: string, env: Env): Promise<void> {
+  await env.GITHUB_REGISTRY.prepare(
+    "UPDATE articles SET status = ?, updated_at = ? WHERE repository_id = ? AND article_path = ?"
+  )
+    .bind(status, new Date().toISOString(), repositoryId, articlePath)
+    .run();
+}
+
+async function markRepositoryArticleRecordsStatus(repositoryId: number, status: string, env: Env): Promise<void> {
+  await env.GITHUB_REGISTRY.prepare("UPDATE articles SET status = ?, updated_at = ? WHERE repository_id = ?")
+    .bind(status, new Date().toISOString(), repositoryId)
+    .run();
+}
+
+function toArticleIndexEntry(article: RenderedArticle): ArticleIndexEntry {
+  return {
+    date: article.date,
+    slug: article.slug,
+    path: article.path,
+    r2Key: article.r2Key
   };
 }
 
@@ -308,6 +390,7 @@ function isClaimed(claim: RepoSyncClaim): claim is RequiredClaim {
     claim.status === "claimed" &&
     typeof claim.leaseId === "string" &&
     typeof claim.leaseExpiresAt === "number" &&
+    typeof claim.repositoryId === "number" &&
     typeof claim.ownerLogin === "string" &&
     typeof claim.repoName === "string" &&
     typeof claim.installationId === "number" &&
@@ -412,6 +495,7 @@ type RequiredClaim = RepoSyncClaim & {
   status: "claimed";
   leaseId: string;
   leaseExpiresAt: number;
+  repositoryId: number;
   ownerLogin: string;
   repoName: string;
   installationId: number;
@@ -423,6 +507,10 @@ type RequiredClaim = RepoSyncClaim & {
 type ActiveClaim = RequiredClaim & {
   desiredState: "active";
   targetCommit: string;
+};
+
+type RenderedArticle = ArticleIndexEntry & {
+  title: string;
 };
 
 export default {

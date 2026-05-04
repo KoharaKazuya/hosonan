@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { convertMarkdownToHtmlFragment } from "../src/markdown";
+import { convertMarkdownToHtmlFragment, extractMarkdownTitle } from "../src/markdown";
 
 describe("convertMarkdownToHtmlFragment", () => {
   it("removes frontmatter from rendered HTML", () => {
@@ -136,5 +136,24 @@ describe("convertMarkdownToHtmlFragment", () => {
 
     expect(html).toContain('class="hljs language-ts"');
     expect(html).toContain("hljs-keyword");
+  });
+});
+
+describe("extractMarkdownTitle", () => {
+  it("prefers frontmatter title, then heading, then fallback", () => {
+    expect(extractMarkdownTitle("---\ntitle: Frontmatter title\n---\n# Heading title", "slug")).toBe("Frontmatter title");
+    expect(extractMarkdownTitle("# Heading title", "slug")).toBe("Heading title");
+    expect(extractMarkdownTitle("body only", "slug")).toBe("slug");
+  });
+
+  it("reads YAML frontmatter title values", () => {
+    expect(extractMarkdownTitle("---\ntitle: \"Quoted title\"\n---\n# Heading", "slug")).toBe("Quoted title");
+    expect(extractMarkdownTitle("---\ntitle: folded\n  title\n---\n# Heading", "slug")).toBe("folded title");
+    expect(extractMarkdownTitle("---\ntitle: 42\n---\n# Heading", "slug")).toBe("42");
+  });
+
+  it("falls back when frontmatter YAML is invalid or title is not scalar", () => {
+    expect(extractMarkdownTitle("---\ntitle: [unterminated\n---\n# Heading", "slug")).toBe("Heading");
+    expect(extractMarkdownTitle("---\ntitle:\n  nested: value\n---\n# Heading", "slug")).toBe("Heading");
   });
 });

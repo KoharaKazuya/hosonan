@@ -99,17 +99,83 @@ class MockQueue {
   }
 }
 
+class MockD1PreparedStatement {
+  values: unknown[] = [];
+
+  constructor(
+    private readonly db: MockD1Database,
+    private readonly query: string
+  ) {}
+
+  bind(...values: unknown[]): MockD1PreparedStatement {
+    this.values = values;
+    return this;
+  }
+
+  async run(): Promise<D1Result> {
+    return this.db.run(this.query, this.values);
+  }
+}
+
+class MockD1Database {
+  articles = new Map<string, Record<string, unknown>>();
+
+  prepare(query: string): MockD1PreparedStatement {
+    return new MockD1PreparedStatement(this, query);
+  }
+
+  async run(query: string, values: unknown[]): Promise<D1Result> {
+    if (query.includes("INSERT INTO articles")) {
+      this.articles.set(`${values[0]}:${values[3]}`, {
+        repository_id: values[0],
+        owner_login: values[1],
+        repo_name: values[2],
+        article_path: values[3],
+        slug: values[4],
+        title: values[5],
+        created_at: values[6],
+        canonical_path: values[7],
+        r2_key: values[8],
+        status: values[9],
+        synced_commit: values[10],
+        updated_at: values[11]
+      });
+    } else if (query.includes("WHERE repository_id = ? AND article_path = ?")) {
+      const row = this.articles.get(`${values[2]}:${values[3]}`);
+      if (row) {
+        row.status = values[0];
+        row.updated_at = values[1];
+      }
+    } else if (query.includes("WHERE repository_id = ?")) {
+      for (const row of this.articles.values()) {
+        if (row.repository_id === values[2]) {
+          row.status = values[0];
+          row.updated_at = values[1];
+        }
+      }
+    }
+
+    return {
+      success: true,
+      meta: { duration: 0, size_after: 0, rows_read: 0, rows_written: 1, last_row_id: 0, changed_db: true, changes: 1 },
+      results: []
+    };
+  }
+}
+
 function env(
   bucket = new MockR2Bucket(),
   namespace = new MockDurableObjectNamespace(),
-  queue = new MockQueue()
+  queue = new MockQueue(),
+  registry = new MockD1Database()
 ): Env {
   return {
     GITHUB_APP_ID: "1",
     GITHUB_PRIVATE_KEY: "unused",
     ARTICLES_BUCKET: bucket as unknown as R2Bucket,
     REPO_SYNC_STATE: namespace as unknown as DurableObjectNamespace,
-    ARTICLE_RENDER_QUEUE: queue as unknown as Queue
+    ARTICLE_RENDER_QUEUE: queue as unknown as Queue,
+    GITHUB_REGISTRY: registry as unknown as D1Database
   };
 }
 
@@ -140,6 +206,7 @@ describe("article renderer", () => {
 
   it("uses GitHub compare to upsert and delete changed articles", async () => {
     const bucket = new MockR2Bucket();
+    const registry = new MockD1Database();
     const stub = new MockRepoSyncStub();
     stub.claim.lastArticleIndex = [
       {
@@ -157,7 +224,7 @@ describe("article renderer", () => {
       ]
     });
 
-    await syncRepositoryMessage(message(), env(bucket, new MockDurableObjectNamespace(stub)));
+    await syncRepositoryMessage(message(), env(bucket, new MockDurableObjectNamespace(stub), new MockQueue(), registry));
 
     expect(github.createInstallationAccessToken).toHaveBeenCalledWith(expect.objectContaining({ GITHUB_APP_ID: "1" }), 123);
     expect(github.compareCommits).toHaveBeenCalledWith("octo", "articles", "old", "new", "token");
@@ -180,6 +247,21 @@ describe("article renderer", () => {
         }
       ]
     });
+    expect(registry.articles.get("42:articles/2026-05-02/first/index.md")).toMatchObject({
+      repository_id: 42,
+      owner_login: "octo",
+      repo_name: "articles",
+      article_path: "articles/2026-05-02/first/index.md",
+      slug: "first",
+      title: "articles/2026-05-02/first/index.md",
+      created_at: "2026-05-02",
+      canonical_path: "/gh/octo/articles/2026-05-02/first/",
+      r2_key: "gh/octo/articles/2026-05-02/first/index.html",
+      status: "active",
+      synced_commit: "new"
+    });
+    expect(Object.keys(registry.articles.get("42:articles/2026-05-02/first/index.md") ?? {})).not.toContain("thumbnail_path");
+    expect(Object.keys(registry.articles.get("42:articles/2026-05-02/first/index.md") ?? {})).not.toContain("thumbnail_raw_url");
   });
 
   it("stores a GitHub fallback instead of fetching oversized Markdown during sync", async () => {
@@ -220,6 +302,24 @@ describe("article renderer", () => {
         r2Key: "gh/octo user/article repo/2026-05-02/large article/index.html"
       }
     ]);
+  });
+
+  it("extracts article titles from frontmatter before storing D1 article records", async () => {
+    const registry = new MockD1Database();
+    const stub = new MockRepoSyncStub();
+    vi.mocked(github.compareCommits).mockResolvedValueOnce({
+      ok: true,
+      files: [{ filename: "articles/2026-05-02/titled/index.md", status: "added" }]
+    });
+    vi.mocked(github.fetchMarkdownAtCommit).mockResolvedValueOnce("---\ntitle: Stored title\n---\n# Rendered title");
+
+    await syncRepositoryMessage(message(), env(new MockR2Bucket(), new MockDurableObjectNamespace(stub), new MockQueue(), registry));
+
+    expect(registry.articles.get("42:articles/2026-05-02/titled/index.md")).toMatchObject({
+      title: "Stored title",
+      created_at: "2026-05-02",
+      synced_commit: "new"
+    });
   });
 
   it("falls back to full scan and deletes missing previous articles when compare is unavailable", async () => {
@@ -279,6 +379,7 @@ describe("article renderer", () => {
 
   it("deletes previous R2 objects for inactive repositories without calling GitHub", async () => {
     const bucket = new MockR2Bucket();
+    const registry = new MockD1Database();
     const stub = new MockRepoSyncStub();
     stub.claim.desiredState = "inactive";
     stub.claim.targetCommit = undefined;
@@ -291,12 +392,19 @@ describe("article renderer", () => {
       }
     ];
 
-    await syncRepositoryMessage(message(), env(bucket, new MockDurableObjectNamespace(stub)));
+    registry.articles.set("42:articles/2026-05-01/old/index.md", {
+      repository_id: 42,
+      article_path: "articles/2026-05-01/old/index.md",
+      status: "active"
+    });
+
+    await syncRepositoryMessage(message(), env(bucket, new MockDurableObjectNamespace(stub), new MockQueue(), registry));
 
     expect(github.createInstallationAccessToken).not.toHaveBeenCalled();
     expect(github.fetchDefaultBranchHead).not.toHaveBeenCalled();
     expect(bucket.deletes).toEqual(["gh/octo/articles/2026-05-01/old/index.html"]);
     expect(stub.completed?.result).toEqual({ syncedCommit: undefined, articleIndex: [] });
+    expect(registry.articles.get("42:articles/2026-05-01/old/index.md")?.status).toBe("inactive");
   });
 
   it("reports failures to the repo sync state without completing the commit", async () => {

@@ -8,11 +8,53 @@ import remarkParse from "remark-parse";
 import remarkRehype from "remark-rehype";
 import { unified } from "unified";
 import { visit } from "unist-util-visit";
+import { parseDocument } from "yaml";
 
-const FRONTMATTER_RE = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/;
+const FRONTMATTER_RE = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
+const HEADING_RE = /^#\s+(.+?)\s*#*\s*$/m;
 
 export function stripFrontmatter(markdown: string): string {
   return markdown.replace(FRONTMATTER_RE, "");
+}
+
+export function extractMarkdownTitle(markdown: string, fallback: string): string {
+  const frontmatterTitle = frontmatterTitleValue(markdown);
+  if (frontmatterTitle) {
+    return frontmatterTitle;
+  }
+
+  const headingTitle = stripFrontmatter(markdown).match(HEADING_RE)?.[1];
+  if (headingTitle) {
+    return headingTitle.trim();
+  }
+
+  return fallback;
+}
+
+function frontmatterTitleValue(markdown: string): string | null {
+  const yamlSource = markdown.match(FRONTMATTER_RE)?.[1];
+  if (!yamlSource) {
+    return null;
+  }
+
+  const document = parseDocument(yamlSource);
+  if (document.errors.length > 0) {
+    return null;
+  }
+
+  const data = document.toJS() as unknown;
+  if (!data || typeof data !== "object" || !("title" in data)) {
+    return null;
+  }
+
+  const title = (data as { title?: unknown }).title;
+  if (typeof title === "string") {
+    return title.trim() || null;
+  }
+  if (typeof title === "number" || typeof title === "boolean") {
+    return String(title);
+  }
+  return null;
 }
 
 function removeUnsafeUrls() {
