@@ -154,6 +154,7 @@ chmod +x "${test_root}/make-webp"
 create_mock_codex "${test_root}/bin"
 
 bash -n "${repo_root}/entrypoint.sh"
+bash -n "${repo_root}/extract-article-titles.sh"
 bash -n "${repo_root}/tests/run-generate-article.sh"
 printf 'ok: shell scripts parse successfully\n'
 
@@ -179,10 +180,31 @@ grep -q '^[[:space:]]*webp \\$' "${repo_root}/Dockerfile"
 ! grep -q '^[[:space:]]*build-essential \\$' "${repo_root}/Dockerfile"
 grep -q '^COPY PROMPT\.md /opt/hosonan/PROMPT\.md$' "${repo_root}/Dockerfile"
 grep -q '^COPY entrypoint\.sh /opt/hosonan/entrypoint\.sh$' "${repo_root}/Dockerfile"
+grep -q '^COPY extract-article-titles\.sh /opt/hosonan/extract-article-titles\.sh$' "${repo_root}/Dockerfile"
+grep -q '^RUN chmod +x /opt/hosonan/extract-article-titles\.sh$' "${repo_root}/Dockerfile"
 grep -q '^ENTRYPOINT \["/opt/hosonan/entrypoint\.sh"\]$' "${repo_root}/Dockerfile"
 grep -q 'uses: <owner>/<repo>/actions/codex@v1' "${repo_root}/templates/user-repo/.github/workflows/generate-article.yml"
 grep -q 'Commit generated article' "${repo_root}/templates/user-repo/.github/workflows/generate-article.yml"
 printf 'ok: Docker action interface and image definition are configured\n'
+
+titles_fixture="${test_root}/titles"
+mkdir -p "${titles_fixture}/articles/a" "${titles_fixture}/articles/b" "${titles_fixture}/articles/c" "${titles_fixture}/articles/d"
+printf -- '---\ntitle: Zebra News\n---\n\n# Body\n' > "${titles_fixture}/articles/b/index.md"
+printf -- '---\ntitle: "Quoted News"\n---\n\n# Body\n' > "${titles_fixture}/articles/a/quoted.md"
+printf -- '---\ntitle: '\''Single Quoted News'\''\n---\n\n# Body\n' > "${titles_fixture}/articles/c/single.md"
+printf -- '---\nslug: missing-title\n---\n\n# Missing title\n' > "${titles_fixture}/articles/d/missing.md"
+printf -- '# No front matter\n\ntitle: Body Title\n' > "${titles_fixture}/articles/d/body-title.md"
+printf -- '---\nslug: front-matter-only\n---\n\ntitle: Body Title\n# Heading Title\n' > "${titles_fixture}/articles/d/front-matter-without-title.md"
+actual_titles="${titles_fixture}/actual-titles.txt"
+expected_titles="${titles_fixture}/expected-titles.txt"
+"${repo_root}/extract-article-titles.sh" "${titles_fixture}/articles" > "$actual_titles"
+{
+  printf '%s\t%s\n' "${titles_fixture}/articles/a/quoted.md" 'Quoted News'
+  printf '%s\t%s\n' "${titles_fixture}/articles/b/index.md" 'Zebra News'
+  printf '%s\t%s\n' "${titles_fixture}/articles/c/single.md" 'Single Quoted News'
+} > "$expected_titles"
+diff -u "$expected_titles" "$actual_titles"
+printf 'ok: article titles are extracted from front matter deterministically\n'
 
 fixture="${test_root}/valid"
 create_fixture_repo "$fixture"
