@@ -29,7 +29,13 @@ const HOME_PAGE_CSS = `
 .article-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:18px}
 .article-card{overflow:hidden;border:1px solid #d0d7de;border-radius:8px;background:#fff;color:inherit;text-decoration:none}
 .article-card:focus-visible{outline:3px solid #0969da;outline-offset:2px}
-.article-thumb{display:block;width:100%;aspect-ratio:16/9;object-fit:cover;background:#eaeef2}
+.article-thumb-frame{position:relative;display:block;aspect-ratio:16/9;overflow:hidden;border-bottom:1px solid #d0d7de;background:#eef2f6}
+.article-thumb{position:absolute;inset:0;display:block;width:100%;height:100%;object-fit:cover}
+.article-thumb[hidden]{display:none}
+.article-thumb-fallback{position:absolute;inset:0;display:grid;place-items:center;background:linear-gradient(135deg,#f6f8fa,#eaeef2);color:#57606a;font-size:.82rem;font-weight:600}
+.article-thumb-fallback-error{display:none}
+.article-thumb-frame.is-error .article-thumb-fallback-loading{display:none}
+.article-thumb-frame.is-error .article-thumb-fallback-error{display:inline}
 .article-card-body{padding:14px 16px 16px}
 .article-card h2{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;overflow-wrap:anywhere;margin:0 0 10px;font-size:1.05rem;line-height:1.35}
 .article-meta{display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;margin:0;color:#57606a;font-size:.9rem}
@@ -41,6 +47,8 @@ const HOME_PAGE_CSS = `
 @media (prefers-color-scheme:dark){
 :root{background:#0d1117;color:#f0f6fc}
 .article-card{border-color:#30363d;background:#161b22}
+.article-thumb-frame{border-bottom-color:#30363d;background:#21262d}
+.article-thumb-fallback{background:linear-gradient(135deg,#21262d,#161b22);color:#8b949e}
 .article-meta{color:#8b949e}
 .channel-placeholder{background:#30363d;color:#c9d1d9}
 }
@@ -180,7 +188,10 @@ ${cards}
 
 function buildArticleCard(article: StoredArticle): string {
   return `<a class="article-card" href="${escapeHtml(article.canonical_path)}">
-<img class="article-thumb" src="${escapeHtml(thumbnailRawUrl(article))}" alt="">
+<span class="article-thumb-frame">
+<span class="article-thumb-fallback" aria-hidden="true"><span class="article-thumb-fallback-loading">読み込み中</span><span class="article-thumb-fallback-error">画像なし</span></span>
+<img class="article-thumb" src="${escapeHtml(thumbnailRawUrl(article))}" alt="" onerror="this.closest('.article-thumb-frame').classList.add('is-error');this.hidden=true">
+</span>
 <div class="article-card-body">
 <h2>${escapeHtml(article.title)}</h2>
 <p class="article-meta"><time datetime="${escapeHtml(article.created_at)}">${escapeHtml(article.created_at)}</time>${buildChannelMeta(article)}</p>

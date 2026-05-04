@@ -141,7 +141,14 @@ describe("site worker", () => {
     expect(html.indexOf("Post 11")).toBeLessThan(html.indexOf("Post 10"));
     expect(html).toContain('<a class="article-card" href="/gh/octo/articles/2026-05-12/post-11/">');
     expect(html).toContain("/*! kiso.css v1.2.4 | MIT License | https://github.com/tak-dcxi/kiso.css */");
+    expect(html).toContain('<span class="article-thumb-frame">');
+    expect(html).toContain('<span class="article-thumb-fallback" aria-hidden="true">');
+    expect(html).toContain('<span class="article-thumb-fallback-loading">読み込み中</span>');
+    expect(html).toContain('<span class="article-thumb-fallback-error">画像なし</span>');
     expect(html).toContain('src="https://raw.githubusercontent.com/octo/articles/commit-11/articles/2026-05-12/post-11/thumbnail.webp"');
+    expect(html).toContain(
+      `onerror="this.closest('.article-thumb-frame').classList.add('is-error');this.hidden=true"`
+    );
     expect(html).toContain("<h2>Post 11</h2>");
     expect(html).toContain("-webkit-line-clamp:3");
     expect(html).toContain("overflow-wrap:anywhere");
