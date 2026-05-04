@@ -256,7 +256,7 @@ describe("worker webhook", () => {
     expect(namespace.stub.notifications).toHaveLength(0);
   });
 
-  it("ignores non-push events without notifying the repo sync state", async () => {
+  it("ignores unknown events without notifying the repo sync state", async () => {
     const namespace = new MockDurableObjectNamespace();
     const response = await worker.fetch(await request(pushPayload(), "ping"), env(new MockQueue(), namespace));
 
@@ -294,6 +294,21 @@ describe("worker webhook", () => {
     expect(namespace.stub.notifications).toHaveLength(0);
   });
 
+  it.each<[string, Partial<GitHubPushPayload>]>([
+    ["without an installation id", { installation: undefined }],
+    ["without a target commit", { after: undefined }],
+    ["when the branch is deleted", { deleted: true }]
+  ])("ignores pushes %s", async (_case, overrides) => {
+    const namespace = new MockDurableObjectNamespace();
+    const response = await worker.fetch(
+      await request(pushPayload(overrides)),
+      env(new MockQueue(), namespace)
+    );
+
+    expect(response.status).toBe(202);
+    expect(namespace.stub.notifications).toHaveLength(0);
+  });
+
   it("registers installation repositories and starts initial sync", async () => {
     const namespace = new MockDurableObjectNamespace();
     const registry = new MockD1Database();
@@ -324,6 +339,92 @@ describe("worker webhook", () => {
     ]);
   });
 
+  it("marks deleted installations and repositories deleted and notifies cleanup sync", async () => {
+    const namespace = new MockDurableObjectNamespace();
+    const registry = new MockD1Database();
+    registry.installations.set(123, {
+      installation_id: 123,
+      account_id: 1,
+      account_login: "octo",
+      account_type: "User",
+      status: "active"
+    });
+    registry.repositories.set(42, {
+      repository_id: 42,
+      installation_id: 123,
+      owner_login: "octo",
+      repo_name: "articles",
+      full_name: "octo/articles",
+      default_branch: "main",
+      status: "active"
+    });
+
+    const response = await worker.fetch(
+      await request(
+        { action: "deleted", installation: { id: 123, account: { id: 1, login: "octo", type: "User" } } },
+        "installation"
+      ),
+      env(new MockQueue(), namespace, registry)
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ handled: true, event: "installation", action: "deleted" });
+    expect(registry.installations.get(123)?.status).toBe("deleted");
+    expect(registry.repositories.get(42)?.status).toBe("deleted");
+    expect(namespace.stub.notifications).toEqual([
+      {
+        repositoryId: 42,
+        ownerLogin: "octo",
+        repoName: "articles",
+        installationId: 123,
+        targetBranch: "main",
+        desiredState: "deleted"
+      }
+    ]);
+  });
+
+  it("ignores unsupported installation actions without notifying the repo sync state", async () => {
+    const namespace = new MockDurableObjectNamespace();
+    const registry = new MockD1Database();
+    const response = await worker.fetch(
+      await request(
+        {
+          action: "suspend",
+          installation: { id: 123, account: { id: 1, login: "octo", type: "User" } },
+          repositories: [repository()]
+        },
+        "installation"
+      ),
+      env(new MockQueue(), namespace, registry)
+    );
+
+    expect(response.status).toBe(202);
+    expect(registry.installations.size).toBe(0);
+    expect(registry.repositories.size).toBe(0);
+    expect(namespace.stub.notifications).toHaveLength(0);
+  });
+
+  it("adds installation repositories and starts initial sync", async () => {
+    const namespace = new MockDurableObjectNamespace();
+    const registry = new MockD1Database();
+    const response = await worker.fetch(
+      await request(
+        { action: "added", installation: { id: 123 }, repositories_added: [repository()] },
+        "installation_repositories"
+      ),
+      env(new MockQueue(), namespace, registry)
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({
+      handled: true,
+      event: "installation_repositories",
+      action: "added"
+    });
+    expect(registry.repositories.get(42)?.status).toBe("active");
+    expect(namespace.stub.notifications[0]).toMatchObject({ repositoryId: 42, desiredState: "active" });
+  });
+
   it("marks removed repositories inactive and notifies cleanup sync", async () => {
     const namespace = new MockDurableObjectNamespace();
     const registry = new MockD1Database();
@@ -347,6 +448,22 @@ describe("worker webhook", () => {
     expect(response.status).toBe(200);
     expect(registry.repositories.get(42)?.status).toBe("inactive");
     expect(namespace.stub.notifications[0]).toMatchObject({ repositoryId: 42, desiredState: "inactive" });
+  });
+
+  it("ignores unsupported installation repository actions without notifying the repo sync state", async () => {
+    const namespace = new MockDurableObjectNamespace();
+    const registry = new MockD1Database();
+    const response = await worker.fetch(
+      await request(
+        { action: "unchanged", installation: { id: 123 }, repositories_added: [repository()] },
+        "installation_repositories"
+      ),
+      env(new MockQueue(), namespace, registry)
+    );
+
+    expect(response.status).toBe(202);
+    expect(registry.repositories.size).toBe(0);
+    expect(namespace.stub.notifications).toHaveLength(0);
   });
 
   it("deduplicates repeated delivery ids after signature verification", async () => {
@@ -384,6 +501,90 @@ describe("worker webhook", () => {
     expect(namespace.stub.notifications[0]).toMatchObject({ repositoryId: 42, desiredState: "deleted" });
   });
 
+  it.each(["privatized", "archived"])("marks %s repositories inactive and notifies cleanup sync", async (action) => {
+    const namespace = new MockDurableObjectNamespace();
+    const registry = new MockD1Database();
+    const response = await worker.fetch(
+      await request({ action, installation: { id: 123 }, repository: repository() }, "repository"),
+      env(new MockQueue(), namespace, registry)
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toEqual({ handled: true, event: "repository", action });
+    expect(registry.repositories.get(42)?.status).toBe("inactive");
+    expect(namespace.stub.notifications[0]).toMatchObject({ repositoryId: 42, desiredState: "inactive" });
+  });
+
+  it.each(["created", "renamed", "transferred", "publicized", "unarchived"])(
+    "marks %s repositories active and notifies initial sync",
+    async (action) => {
+      const namespace = new MockDurableObjectNamespace();
+      const registry = new MockD1Database();
+      const response = await worker.fetch(
+        await request({ action, installation: { id: 123 }, repository: repository() }, "repository"),
+        env(new MockQueue(), namespace, registry)
+      );
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({ handled: true, event: "repository", action });
+      expect(registry.repositories.get(42)?.status).toBe("active");
+      expect(namespace.stub.notifications[0]).toMatchObject({ repositoryId: 42, desiredState: "active" });
+    }
+  );
+
+  it("updates edited repositories without notifying the repo sync state", async () => {
+    const namespace = new MockDurableObjectNamespace();
+    const registry = new MockD1Database();
+    const response = await worker.fetch(
+      await request(
+        {
+          action: "edited",
+          installation: { id: 123 },
+          repository: repository({ default_branch: "trunk", visibility: "private" })
+        },
+        "repository"
+      ),
+      env(new MockQueue(), namespace, registry)
+    );
+
+    expect(response.status).toBe(200);
+    expect(registry.repositories.get(42)).toMatchObject({
+      status: "active",
+      default_branch: "trunk",
+      visibility: "private"
+    });
+    expect(namespace.stub.notifications).toHaveLength(0);
+  });
+
+  it.each(["created", "edited", "renamed", "transferred", "publicized", "unarchived"])(
+    "ignores %s repository events without an installation id",
+    async (action) => {
+      const namespace = new MockDurableObjectNamespace();
+      const registry = new MockD1Database();
+      const response = await worker.fetch(
+        await request({ action, repository: repository() }, "repository"),
+        env(new MockQueue(), namespace, registry)
+      );
+
+      expect(response.status).toBe(202);
+      expect(registry.repositories.size).toBe(0);
+      expect(namespace.stub.notifications).toHaveLength(0);
+    }
+  );
+
+  it("ignores unsupported repository actions without notifying the repo sync state", async () => {
+    const namespace = new MockDurableObjectNamespace();
+    const registry = new MockD1Database();
+    const response = await worker.fetch(
+      await request({ action: "starred", installation: { id: 123 }, repository: repository() }, "repository"),
+      env(new MockQueue(), namespace, registry)
+    );
+
+    expect(response.status).toBe(202);
+    expect(registry.repositories.size).toBe(0);
+    expect(namespace.stub.notifications).toHaveLength(0);
+  });
+
   it("updates installation target and stored repository owner login on account rename", async () => {
     const registry = new MockD1Database();
     registry.installations.set(123, { installation_id: 123, account_login: "octo" });
@@ -414,6 +615,67 @@ describe("worker webhook", () => {
     expect(registry.installations.get(123)?.account_login).toBe("octocat");
     expect(registry.repositories.get(42)?.owner_login).toBe("octocat");
     expect(registry.repositories.get(42)?.full_name).toBe("octocat/articles");
+  });
+
+  it.each([
+    ["for unsupported actions", { action: "deleted", installation: { id: 123 }, account: { id: 1, login: "octocat" } }],
+    ["without an installation id", { action: "renamed", account: { id: 1, login: "octocat" } }],
+    ["without an account login", { action: "renamed", installation: { id: 123 }, account: { id: 1 } }]
+  ])("ignores installation target renames %s", async (_case, payload) => {
+    const namespace = new MockDurableObjectNamespace();
+    const registry = new MockD1Database();
+    registry.installations.set(123, { installation_id: 123, account_login: "octo" });
+    registry.repositories.set(42, {
+      repository_id: 42,
+      installation_id: 123,
+      owner_login: "octo",
+      repo_name: "articles",
+      full_name: "octo/articles",
+      default_branch: "main",
+      status: "active"
+    });
+
+    const response = await worker.fetch(
+      await request(payload, "installation_target"),
+      env(new MockQueue(), namespace, registry)
+    );
+
+    expect(response.status).toBe(202);
+    expect(registry.installations.get(123)?.account_login).toBe("octo");
+    expect(registry.repositories.get(42)?.owner_login).toBe("octo");
+    expect(namespace.stub.notifications).toHaveLength(0);
+  });
+
+  it("updates installation target without repository owners when previous login is absent", async () => {
+    const registry = new MockD1Database();
+    registry.installations.set(123, { installation_id: 123, account_login: "octo" });
+    registry.repositories.set(42, {
+      repository_id: 42,
+      installation_id: 123,
+      owner_login: "octo",
+      repo_name: "articles",
+      full_name: "octo/articles",
+      default_branch: "main",
+      status: "active"
+    });
+
+    const response = await worker.fetch(
+      await request(
+        {
+          action: "renamed",
+          installation: { id: 123 },
+          account: { id: 1, login: "octocat", type: "User" },
+          changes: {}
+        },
+        "installation_target"
+      ),
+      env(new MockQueue(), new MockDurableObjectNamespace(), registry)
+    );
+
+    expect(response.status).toBe(200);
+    expect(registry.installations.get(123)?.account_login).toBe("octocat");
+    expect(registry.repositories.get(42)?.owner_login).toBe("octo");
+    expect(registry.repositories.get(42)?.full_name).toBe("octo/articles");
   });
 
   it("records meta webhook deletion events", async () => {
