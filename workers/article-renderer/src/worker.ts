@@ -28,7 +28,7 @@ import {
   listArticleFilesAtCommit,
   type GitHubChangedFile
 } from "./github";
-import { convertMarkdownToHtmlFragment, extractMarkdownTitle } from "./markdown";
+import { convertMarkdownToHtmlFragment, extractMarkdownCreatedAt, extractMarkdownTitle } from "./markdown";
 
 const LEASE_EXTEND_WINDOW_MS = 2 * 60_000;
 const DEFAULT_RETRY_SECONDS = 60;
@@ -56,6 +56,7 @@ export async function renderArticleToR2(
     ? convertMarkdownToHtmlFragment(markdown)
     : oversizedMarkdownHtml(ownerLogin, repoName, article.path, commitSha);
   const title = truncateArticleTitle(markdown ? extractMarkdownTitle(markdown, article.slug) : article.slug);
+  const createdAt = markdown ? extractMarkdownCreatedAt(markdown, article.date) : article.date;
   const key = r2Key(ownerLogin, repoName, article);
 
   await env.ARTICLES_BUCKET.put(key, html, {
@@ -64,7 +65,7 @@ export async function renderArticleToR2(
     }
   });
 
-  return { ...article, r2Key: key, title };
+  return { ...article, r2Key: key, title, createdAt };
 }
 
 function oversizedMarkdownHtml(ownerLogin: string, repoName: string, path: string, commitSha: string): string {
@@ -286,7 +287,7 @@ async function upsertArticleRecord(
       article.path,
       article.slug,
       article.title,
-      article.date,
+      article.createdAt,
       buildServedArticlePath(ownerLogin, repoName, article),
       article.r2Key,
       "active",
@@ -557,6 +558,7 @@ type ActiveClaim = RequiredClaim & {
 
 type RenderedArticle = ArticleIndexEntry & {
   title: string;
+  createdAt: string;
 };
 
 export default {

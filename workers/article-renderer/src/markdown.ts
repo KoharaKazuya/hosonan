@@ -18,7 +18,8 @@ export function stripFrontmatter(markdown: string): string {
 }
 
 export function extractMarkdownTitle(markdown: string, fallback: string): string {
-  const frontmatterTitle = frontmatterTitleValue(markdown);
+  const frontmatter = frontmatterValue(markdown);
+  const frontmatterTitle = frontmatterTitleValue(frontmatter);
   if (frontmatterTitle) {
     return frontmatterTitle;
   }
@@ -31,7 +32,31 @@ export function extractMarkdownTitle(markdown: string, fallback: string): string
   return fallback;
 }
 
-function frontmatterTitleValue(markdown: string): string | null {
+export function extractMarkdownCreatedAt(markdown: string, fallbackDate: string): string {
+  const frontmatter = frontmatterValue(markdown);
+  if (!frontmatter || !("createdAt" in frontmatter)) {
+    return fallbackDate;
+  }
+
+  const createdAt = frontmatter.createdAt;
+  if (typeof createdAt !== "string") {
+    return fallbackDate;
+  }
+
+  const trimmed = createdAt.trim();
+  if (!isRfc3339DateTimeWithSeconds(trimmed)) {
+    return fallbackDate;
+  }
+
+  const timestamp = Date.parse(trimmed);
+  if (Number.isNaN(timestamp)) {
+    return fallbackDate;
+  }
+
+  return new Date(timestamp).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+function frontmatterValue(markdown: string): Record<string, unknown> | null {
   const yamlSource = markdown.match(FRONTMATTER_RE)?.[1];
   if (!yamlSource) {
     return null;
@@ -43,11 +68,19 @@ function frontmatterTitleValue(markdown: string): string | null {
   }
 
   const data = document.toJS() as unknown;
-  if (!data || typeof data !== "object" || !("title" in data)) {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
     return null;
   }
 
-  const title = (data as { title?: unknown }).title;
+  return data as Record<string, unknown>;
+}
+
+function frontmatterTitleValue(frontmatter: Record<string, unknown> | null): string | null {
+  if (!frontmatter || !("title" in frontmatter)) {
+    return null;
+  }
+
+  const title = frontmatter.title;
   if (typeof title === "string") {
     return title.trim() || null;
   }
@@ -55,6 +88,10 @@ function frontmatterTitleValue(markdown: string): string | null {
     return String(title);
   }
   return null;
+}
+
+function isRfc3339DateTimeWithSeconds(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value);
 }
 
 function removeUnsafeUrls() {

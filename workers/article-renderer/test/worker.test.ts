@@ -334,6 +334,26 @@ describe("article renderer", () => {
     });
   });
 
+  it("stores frontmatter createdAt timestamps in D1 article records", async () => {
+    const registry = new MockD1Database();
+    const stub = new MockRepoSyncStub();
+    vi.mocked(github.compareCommits).mockResolvedValueOnce({
+      ok: true,
+      files: [{ filename: "articles/2026-05-02/timed/index.md", status: "added" }]
+    });
+    vi.mocked(github.fetchMarkdownAtCommit).mockResolvedValueOnce(
+      "---\ntitle: Timed title\ncreatedAt: 2026-05-02T23:45:01+09:00\n---\n# Rendered title"
+    );
+
+    await syncRepositoryMessage(message(), env(new MockR2Bucket(), new MockDurableObjectNamespace(stub), new MockQueue(), registry));
+
+    expect(registry.articles.get("42:articles/2026-05-02/timed/index.md")).toMatchObject({
+      title: "Timed title",
+      created_at: "2026-05-02T14:45:01Z",
+      synced_commit: "new"
+    });
+  });
+
   it("stores channel config from hosonan.json when the config file changes during active sync", async () => {
     const registry = new MockD1Database();
     const stub = new MockRepoSyncStub();

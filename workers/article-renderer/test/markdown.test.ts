@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { convertMarkdownToHtmlFragment, extractMarkdownTitle } from "../src/markdown";
+import { convertMarkdownToHtmlFragment, extractMarkdownCreatedAt, extractMarkdownTitle } from "../src/markdown";
 
 describe("convertMarkdownToHtmlFragment", () => {
   it("removes frontmatter from rendered HTML", () => {
@@ -155,5 +155,25 @@ describe("extractMarkdownTitle", () => {
   it("falls back when frontmatter YAML is invalid or title is not scalar", () => {
     expect(extractMarkdownTitle("---\ntitle: [unterminated\n---\n# Heading", "slug")).toBe("Heading");
     expect(extractMarkdownTitle("---\ntitle:\n  nested: value\n---\n# Heading", "slug")).toBe("Heading");
+  });
+});
+
+describe("extractMarkdownCreatedAt", () => {
+  it("reads RFC3339 frontmatter createdAt values at second precision", () => {
+    expect(extractMarkdownCreatedAt("---\ncreatedAt: 2026-05-02T12:34:56Z\n---\n# Heading", "2026-05-02")).toBe(
+      "2026-05-02T12:34:56Z"
+    );
+    expect(extractMarkdownCreatedAt("---\ncreatedAt: 2026-05-02T12:34:56+09:00\n---\n# Heading", "2026-05-02")).toBe(
+      "2026-05-02T03:34:56Z"
+    );
+  });
+
+  it("falls back to the path date when createdAt is missing or invalid", () => {
+    expect(extractMarkdownCreatedAt("---\ntitle: Test\n---\n# Heading", "2026-05-02")).toBe("2026-05-02");
+    expect(extractMarkdownCreatedAt("---\ncreatedAt: 2026-05-02\n---\n# Heading", "2026-05-02")).toBe("2026-05-02");
+    expect(extractMarkdownCreatedAt("---\ncreatedAt: invalid\n---\n# Heading", "2026-05-02")).toBe("2026-05-02");
+    expect(extractMarkdownCreatedAt("---\ncreatedAt: [2026-05-02T12:34:56Z]\n---\n# Heading", "2026-05-02")).toBe(
+      "2026-05-02"
+    );
   });
 });
