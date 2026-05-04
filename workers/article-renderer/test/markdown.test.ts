@@ -28,6 +28,10 @@ describe("convertMarkdownToHtmlFragment", () => {
     expect(html).toContain("<del>old</del>");
     expect(html).toContain('<a href="https://example.com">https://example.com</a>');
     expect(html).toContain("footnote");
+    expect(html).toContain('href="#user-content-fn-1"');
+    expect(html).toContain('href="#user-content-fnref-1"');
+    expect(html).toContain('aria-label="Back to reference 1"');
+    expect(html).toContain("data-footnote-backref");
   });
 
   it("sanitizes unsupported raw HTML instead of failing conversion", () => {
@@ -77,11 +81,13 @@ describe("convertMarkdownToHtmlFragment", () => {
       "[plain](http://example.com)",
       "[script](javascript:alert(1))",
       "[data](data:text/html,hello)",
+      "[fragment](#footnote-label)",
       "[relative](/docs)"
     ].join("\n\n"));
 
     expect(html).toContain('<a href="https://example.com">secure</a>');
     expect(html).toContain('<a href="mailto:hello@example.com">mail</a>');
+    expect(html).toContain('<a href="#footnote-label">fragment</a>');
     expect(html).toContain("<a>plain</a>");
     expect(html).toContain("<a>script</a>");
     expect(html).toContain("<a>data</a>");

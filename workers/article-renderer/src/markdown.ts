@@ -18,7 +18,7 @@ export function stripFrontmatter(markdown: string): string {
 function removeUnsafeUrls() {
   return (tree: Root) => {
     visit(tree, "element", (node: Element) => {
-      if (typeof node.properties?.href === "string" && !isAllowedUrl(node.properties.href, ["https:", "mailto:"])) {
+      if (typeof node.properties?.href === "string" && !isAllowedHref(node.properties.href)) {
         delete node.properties.href;
       }
 
@@ -27,6 +27,10 @@ function removeUnsafeUrls() {
       }
     });
   };
+}
+
+function isAllowedHref(value: string): boolean {
+  return value.startsWith("#") || isAllowedUrl(value, ["https:", "mailto:"]);
 }
 
 function isAllowedUrl(value: string, protocols: string[]): boolean {
@@ -74,7 +78,7 @@ const sanitizeSchema: SanitizeSchema = {
   attributes: {
     ...defaultSchema.attributes,
     "*": ["className", "id"],
-    a: ["href", "id", "className", "ariaDescribedBy", "dataFootnoteRef"],
+    a: ["href", "id", "className", "ariaDescribedBy", "ariaLabel", "dataFootnoteRef", "dataFootnoteBackref"],
     code: ["className"],
     input: ["checked", "className", "disabled", "type"],
     li: ["className"],
