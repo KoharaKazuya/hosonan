@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "npm run types:check && tsc --noEmit",
+    "deploy": "npm run build && wrangler deploy",
     "types": "wrangler types worker-configuration.d.ts",
     "types:check": "wrangler types worker-configuration.d.ts --check",
     "test": "vitest run"
