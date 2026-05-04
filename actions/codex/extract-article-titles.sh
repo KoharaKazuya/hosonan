@@ -7,11 +7,41 @@ if [[ "$#" -ne 1 ]]; then
   exit 2
 fi
 
-articles_dir="$1"
+articles_dir="${1%/}"
+today="${HOSONAN_TODAY:-$(date +%F)}"
+
+date_days_ago() {
+  local base_date="$1"
+  local days="$2"
+
+  if date -j -v-"${days}"d -f '%F' "$base_date" +%F >/dev/null 2>&1; then
+    date -j -v-"${days}"d -f '%F' "$base_date" +%F
+  else
+    date -d "${base_date} ${days} days ago" +%F
+  fi
+}
+
+if [[ ! "$today" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+  echo "error: HOSONAN_TODAY must be YYYY-MM-DD" >&2
+  exit 2
+fi
+
+cutoff_date="$(date_days_ago "$today" 6)"
 
 find "$articles_dir" -type f -name '*.md' -print0 |
   sort -z |
   while IFS= read -r -d '' article_file; do
+    article_relative="${article_file#"$articles_dir"/}"
+    article_date="${article_relative%%/*}"
+
+    if [[ ! "$article_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+      continue
+    fi
+
+    if [[ "$article_date" < "$cutoff_date" || "$article_date" > "$today" ]]; then
+      continue
+    fi
+
     title="$(
       awk '
         NR == 1 {
@@ -40,6 +70,8 @@ find "$articles_dir" -type f -name '*.md' -print0 |
     )"
 
     if [[ -n "$title" ]]; then
-      printf '%s\t%s\n' "$article_file" "$title"
+      printf '%s\t%s\t%s\n' "$article_date" "$article_file" "$title"
     fi
-  done
+  done |
+  sort -t '	' -k1,1r -k2,2 |
+  cut -f2-

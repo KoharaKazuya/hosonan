@@ -188,23 +188,36 @@ grep -q 'Commit generated article' "${repo_root}/templates/user-repo/.github/wor
 printf 'ok: Docker action interface and image definition are configured\n'
 
 titles_fixture="${test_root}/titles"
-mkdir -p "${titles_fixture}/articles/a" "${titles_fixture}/articles/b" "${titles_fixture}/articles/c" "${titles_fixture}/articles/d"
-printf -- '---\ntitle: Zebra News\n---\n\n# Body\n' > "${titles_fixture}/articles/b/index.md"
-printf -- '---\ntitle: "Quoted News"\n---\n\n# Body\n' > "${titles_fixture}/articles/a/quoted.md"
-printf -- '---\ntitle: '\''Single Quoted News'\''\n---\n\n# Body\n' > "${titles_fixture}/articles/c/single.md"
-printf -- '---\nslug: missing-title\n---\n\n# Missing title\n' > "${titles_fixture}/articles/d/missing.md"
-printf -- '# No front matter\n\ntitle: Body Title\n' > "${titles_fixture}/articles/d/body-title.md"
-printf -- '---\nslug: front-matter-only\n---\n\ntitle: Body Title\n# Heading Title\n' > "${titles_fixture}/articles/d/front-matter-without-title.md"
+mkdir -p \
+  "${titles_fixture}/articles/2026-04-28/old" \
+  "${titles_fixture}/articles/2026-04-29/boundary" \
+  "${titles_fixture}/articles/2026-05-01/missing" \
+  "${titles_fixture}/articles/2026-05-03/quoted" \
+  "${titles_fixture}/articles/2026-05-04/single" \
+  "${titles_fixture}/articles/2026-05-05/zebra" \
+  "${titles_fixture}/articles/2026-05-06/future" \
+  "${titles_fixture}/articles/misc/no-date"
+printf -- '---\ntitle: Old News\n---\n\n# Body\n' > "${titles_fixture}/articles/2026-04-28/old/index.md"
+printf -- '---\ntitle: Boundary News\n---\n\n# Body\n' > "${titles_fixture}/articles/2026-04-29/boundary/index.md"
+printf -- '---\ntitle: Zebra News\n---\n\n# Body\n' > "${titles_fixture}/articles/2026-05-05/zebra/index.md"
+printf -- '---\ntitle: "Quoted News"\n---\n\n# Body\n' > "${titles_fixture}/articles/2026-05-03/quoted/quoted.md"
+printf -- '---\ntitle: '\''Single Quoted News'\''\n---\n\n# Body\n' > "${titles_fixture}/articles/2026-05-04/single/single.md"
+printf -- '---\nslug: missing-title\n---\n\n# Missing title\n' > "${titles_fixture}/articles/2026-05-01/missing/missing.md"
+printf -- '# No front matter\n\ntitle: Body Title\n' > "${titles_fixture}/articles/2026-05-01/missing/body-title.md"
+printf -- '---\nslug: front-matter-only\n---\n\ntitle: Body Title\n# Heading Title\n' > "${titles_fixture}/articles/2026-05-01/missing/front-matter-without-title.md"
+printf -- '---\ntitle: Future News\n---\n\n# Body\n' > "${titles_fixture}/articles/2026-05-06/future/index.md"
+printf -- '---\ntitle: No Date News\n---\n\n# Body\n' > "${titles_fixture}/articles/misc/no-date/index.md"
 actual_titles="${titles_fixture}/actual-titles.txt"
 expected_titles="${titles_fixture}/expected-titles.txt"
-"${repo_root}/extract-article-titles.sh" "${titles_fixture}/articles" > "$actual_titles"
+HOSONAN_TODAY=2026-05-05 "${repo_root}/extract-article-titles.sh" "${titles_fixture}/articles" > "$actual_titles"
 {
-  printf '%s\t%s\n' "${titles_fixture}/articles/a/quoted.md" 'Quoted News'
-  printf '%s\t%s\n' "${titles_fixture}/articles/b/index.md" 'Zebra News'
-  printf '%s\t%s\n' "${titles_fixture}/articles/c/single.md" 'Single Quoted News'
+  printf '%s\t%s\n' "${titles_fixture}/articles/2026-05-05/zebra/index.md" 'Zebra News'
+  printf '%s\t%s\n' "${titles_fixture}/articles/2026-05-04/single/single.md" 'Single Quoted News'
+  printf '%s\t%s\n' "${titles_fixture}/articles/2026-05-03/quoted/quoted.md" 'Quoted News'
+  printf '%s\t%s\n' "${titles_fixture}/articles/2026-04-29/boundary/index.md" 'Boundary News'
 } > "$expected_titles"
 diff -u "$expected_titles" "$actual_titles"
-printf 'ok: article titles are extracted from front matter deterministically\n'
+printf 'ok: article titles are extracted from recent date directories in latest order\n'
 
 fixture="${test_root}/valid"
 create_fixture_repo "$fixture"

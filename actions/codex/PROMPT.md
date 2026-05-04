@@ -136,6 +136,8 @@ updatedAt: <記事の更新日時(RFC3339)>
 /opt/hosonan/extract-article-titles.sh ../articles
 ```
 
+- このコマンドは、`../articles/YYYY-MM-DD/` の日付ディレクトリを基準に、実行日を含む最近 1 週間の記事だけを出力する
+- このコマンドの出力は、最新の日付の記事が先頭になるように日付の新しい順に並ぶ
 - この出力を既存記事の title 一覧として扱い、同じニュースや同じ発表を扱う title の重複回避に使う
 - ただし、title 一覧だけで本文内容を判断せず、本文確認は別途 `../articles/**/*.md` と `../articles/**/index.md` を読んで行う
 - 既存の `../articles/**/*.md` と `../articles/**/index.md` を確認し、過去記事と同じニュースや同じ発表を記事化しない
