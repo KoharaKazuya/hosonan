@@ -1,7 +1,7 @@
 import type { RepoSyncNotification, RepoSyncQueueMessage } from "@hosonan/shared";
 import { describe, expect, it, vi } from "vitest";
 import worker, { RepoSyncStateDurableObject } from "../src/worker";
-import type { GitHubPushPayload } from "../src/types";
+import type { GitHubPushPayload, GitHubRepositoryPayload } from "../src/types";
 
 class MockQueue {
   messages: RepoSyncQueueMessage[] = [];
@@ -49,11 +49,144 @@ class MockDurableObjectNamespace {
   }
 }
 
-function env(queue = new MockQueue(), namespace = new MockDurableObjectNamespace()): Env {
+class MockD1PreparedStatement {
+  values: unknown[] = [];
+
+  constructor(
+    private readonly db: MockD1Database,
+    private readonly query: string
+  ) {}
+
+  bind(...values: unknown[]): MockD1PreparedStatement {
+    this.values = values;
+    return this;
+  }
+
+  async run(): Promise<D1Result> {
+    return this.db.run(this.query, this.values);
+  }
+
+  async all<T = Record<string, unknown>>(): Promise<D1Result<T>> {
+    return { success: true, meta: this.db.meta(0), results: this.db.select(this.query, this.values) as T[] };
+  }
+
+  async first<T = Record<string, unknown>>(): Promise<T | null> {
+    return (this.db.select(this.query, this.values)[0] as T | undefined) ?? null;
+  }
+}
+
+class MockD1Database {
+  deliveries = new Set<string>();
+  deliveryRows: Array<{ delivery_id: string; status: string }> = [];
+  repositories = new Map<number, Record<string, unknown>>();
+  installations = new Map<number, Record<string, unknown>>();
+
+  prepare(query: string): MockD1PreparedStatement {
+    return new MockD1PreparedStatement(this, query);
+  }
+
+  meta(changes: number): D1Meta & Record<string, unknown> {
+    return {
+      duration: 0,
+      size_after: 0,
+      rows_read: 0,
+      rows_written: changes,
+      last_row_id: 0,
+      changed_db: changes > 0,
+      changes
+    };
+  }
+
+  async run(query: string, values: unknown[]): Promise<D1Result> {
+    let changes = 1;
+    if (query.includes("INSERT OR IGNORE INTO webhook_deliveries")) {
+      const deliveryId = String(values[0]);
+      if (this.deliveries.has(deliveryId)) {
+        changes = 0;
+      } else {
+        this.deliveries.add(deliveryId);
+        this.deliveryRows.push({ delivery_id: deliveryId, status: String(values[4]) });
+      }
+    } else if (query.startsWith("UPDATE webhook_deliveries")) {
+      const deliveryId = String(values[3]);
+      const row = this.deliveryRows.find((delivery) => delivery.delivery_id === deliveryId);
+      if (row) {
+        row.status = String(values[0]);
+      }
+    } else if (query.includes("INSERT INTO installations")) {
+      this.installations.set(Number(values[0]), {
+        installation_id: Number(values[0]),
+        account_id: values[1],
+        account_login: values[2],
+        account_type: values[3],
+        status: values[4]
+      });
+    } else if (query.startsWith("UPDATE installations SET status")) {
+      const row = this.installations.get(Number(values[2]));
+      if (row) {
+        row.status = values[0];
+      }
+    } else if (query.startsWith("UPDATE installations SET account_id")) {
+      const row = this.installations.get(Number(values[4]));
+      if (row) {
+        row.account_id = values[0];
+        row.account_login = values[1];
+        row.account_type = values[2];
+      }
+    } else if (query.includes("INSERT INTO repositories")) {
+      this.repositories.set(Number(values[0]), {
+        repository_id: Number(values[0]),
+        installation_id: Number(values[1]),
+        owner_login: values[2],
+        repo_name: values[3],
+        full_name: values[4],
+        default_branch: values[5],
+        visibility: values[6],
+        archived: values[7],
+        status: values[8]
+      });
+    } else if (query.startsWith("UPDATE repositories SET status")) {
+      const row = this.repositories.get(Number(values[2]));
+      if (row) {
+        row.status = values[0];
+      }
+    } else if (query.startsWith("UPDATE repositories SET owner_login")) {
+      for (const row of this.repositories.values()) {
+        if (row.installation_id === values[3] && row.owner_login === values[4]) {
+          row.owner_login = values[0];
+          row.full_name = `${values[1]}/${row.repo_name}`;
+        }
+      }
+    } else if (query.includes("INSERT INTO webhook_deliveries")) {
+      this.deliveryRows.push({ delivery_id: String(values[0]), status: String(values[4]) });
+    }
+    return { success: true, meta: this.meta(changes), results: [] };
+  }
+
+  select(query: string, values: unknown[]): Record<string, unknown>[] {
+    if (query.includes("WHERE installation_id = ?")) {
+      return [...this.repositories.values()].filter(
+        (repository) => repository.installation_id === Number(values[0]) && repository.status !== "deleted"
+      );
+    }
+    if (query.includes("WHERE repository_id = ?")) {
+      const row = this.repositories.get(Number(values[0]));
+      return row ? [row] : [];
+    }
+    return [];
+  }
+}
+
+function env(
+  queue = new MockQueue(),
+  namespace = new MockDurableObjectNamespace(),
+  registry = new MockD1Database()
+): Env {
   return {
     WEBHOOK_SECRET: "secret",
     ARTICLE_RENDER_QUEUE: queue as unknown as Queue<RepoSyncQueueMessage>,
-    REPO_SYNC_STATE: namespace as unknown as Env["REPO_SYNC_STATE"]
+    REPO_SYNC_STATE: namespace as unknown as Env["REPO_SYNC_STATE"],
+    GITHUB_REGISTRY: registry as unknown as D1Database
   };
 }
 
@@ -65,12 +198,13 @@ async function signature(body: string, secret = "secret"): Promise<string> {
   return `sha256=${[...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("")}`;
 }
 
-async function request(payload: GitHubPushPayload, event = "push", secret = "secret"): Promise<Request> {
+async function request(payload: unknown, event = "push", secret = "secret", deliveryId?: string): Promise<Request> {
   const body = JSON.stringify(payload);
   return new Request("https://worker.example/webhook", {
     method: "POST",
     headers: {
       "x-github-event": event,
+      ...(deliveryId ? { "x-github-delivery": deliveryId } : {}),
       "x-hub-signature-256": await signature(body, secret)
     },
     body
@@ -90,6 +224,19 @@ function pushPayload(overrides: Partial<GitHubPushPayload> = {}): GitHubPushPayl
     },
     installation: { id: 123 },
     commits: [],
+    ...overrides
+  };
+}
+
+function repository(overrides: Partial<GitHubRepositoryPayload> = {}): GitHubRepositoryPayload {
+  return {
+    id: 42,
+    owner: { login: "octo" },
+    name: "articles",
+    full_name: "octo/articles",
+    default_branch: "main",
+    visibility: "public",
+    archived: false,
     ...overrides
   };
 }
@@ -130,6 +277,7 @@ describe("worker webhook", () => {
         repoName: "articles",
         installationId: 123,
         targetBranch: "main",
+        desiredState: "active",
         targetCommit: "abc123"
       }
     ]);
@@ -145,6 +293,139 @@ describe("worker webhook", () => {
     expect(response.status).toBe(202);
     expect(namespace.stub.notifications).toHaveLength(0);
   });
+
+  it("registers installation repositories and starts initial sync", async () => {
+    const namespace = new MockDurableObjectNamespace();
+    const registry = new MockD1Database();
+    const response = await worker.fetch(
+      await request(
+        {
+          action: "created",
+          installation: { id: 123, account: { id: 1, login: "octo", type: "User" } },
+          repositories: [repository({ owner: undefined, full_name: "octo/articles" })]
+        },
+        "installation"
+      ),
+      env(new MockQueue(), namespace, registry)
+    );
+
+    expect(response.status).toBe(200);
+    expect(registry.installations.get(123)?.status).toBe("active");
+    expect(registry.repositories.get(42)?.status).toBe("active");
+    expect(namespace.stub.notifications).toEqual([
+      {
+        repositoryId: 42,
+        ownerLogin: "octo",
+        repoName: "articles",
+        installationId: 123,
+        targetBranch: "main",
+        desiredState: "active"
+      }
+    ]);
+  });
+
+  it("marks removed repositories inactive and notifies cleanup sync", async () => {
+    const namespace = new MockDurableObjectNamespace();
+    const registry = new MockD1Database();
+    registry.repositories.set(42, {
+      repository_id: 42,
+      installation_id: 123,
+      owner_login: "octo",
+      repo_name: "articles",
+      default_branch: "main",
+      status: "active"
+    });
+
+    const response = await worker.fetch(
+      await request(
+        { action: "removed", installation: { id: 123 }, repositories_removed: [repository()] },
+        "installation_repositories"
+      ),
+      env(new MockQueue(), namespace, registry)
+    );
+
+    expect(response.status).toBe(200);
+    expect(registry.repositories.get(42)?.status).toBe("inactive");
+    expect(namespace.stub.notifications[0]).toMatchObject({ repositoryId: 42, desiredState: "inactive" });
+  });
+
+  it("deduplicates repeated delivery ids after signature verification", async () => {
+    const namespace = new MockDurableObjectNamespace();
+    const registry = new MockD1Database();
+    const testEnv = env(new MockQueue(), namespace, registry);
+    const first = await worker.fetch(await request(pushPayload(), "push", "secret", "delivery-1"), testEnv);
+    const second = await worker.fetch(await request(pushPayload(), "push", "secret", "delivery-1"), testEnv);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(202);
+    expect(namespace.stub.notifications).toHaveLength(1);
+    expect(registry.deliveryRows.find((delivery) => delivery.delivery_id === "delivery-1")?.status).toBe("completed");
+  });
+
+  it("marks deleted repositories deleted and notifies deleted sync from stored registry data", async () => {
+    const namespace = new MockDurableObjectNamespace();
+    const registry = new MockD1Database();
+    registry.repositories.set(42, {
+      repository_id: 42,
+      installation_id: 123,
+      owner_login: "octo",
+      repo_name: "articles",
+      default_branch: "main",
+      status: "active"
+    });
+
+    const response = await worker.fetch(
+      await request({ action: "deleted", repository: repository() }, "repository"),
+      env(new MockQueue(), namespace, registry)
+    );
+
+    expect(response.status).toBe(200);
+    expect(registry.repositories.get(42)?.status).toBe("deleted");
+    expect(namespace.stub.notifications[0]).toMatchObject({ repositoryId: 42, desiredState: "deleted" });
+  });
+
+  it("updates installation target and stored repository owner login on account rename", async () => {
+    const registry = new MockD1Database();
+    registry.installations.set(123, { installation_id: 123, account_login: "octo" });
+    registry.repositories.set(42, {
+      repository_id: 42,
+      installation_id: 123,
+      owner_login: "octo",
+      repo_name: "articles",
+      full_name: "octo/articles",
+      default_branch: "main",
+      status: "active"
+    });
+
+    const response = await worker.fetch(
+      await request(
+        {
+          action: "renamed",
+          installation: { id: 123 },
+          account: { id: 1, login: "octocat", type: "User" },
+          changes: { login: { from: "octo" } }
+        },
+        "installation_target"
+      ),
+      env(new MockQueue(), new MockDurableObjectNamespace(), registry)
+    );
+
+    expect(response.status).toBe(200);
+    expect(registry.installations.get(123)?.account_login).toBe("octocat");
+    expect(registry.repositories.get(42)?.owner_login).toBe("octocat");
+    expect(registry.repositories.get(42)?.full_name).toBe("octocat/articles");
+  });
+
+  it("records meta webhook deletion events", async () => {
+    const registry = new MockD1Database();
+    const response = await worker.fetch(
+      await request({ hook_id: 99 }, "meta"),
+      env(new MockQueue(), new MockDurableObjectNamespace(), registry)
+    );
+
+    expect(response.status).toBe(200);
+    expect(registry.deliveryRows[0]).toMatchObject({ status: "hook_deleted" });
+  });
 });
 
 describe("RepoSyncStateDurableObject", () => {
@@ -158,19 +439,21 @@ describe("RepoSyncStateDurableObject", () => {
     await object.notify({
       repositoryId: 42,
       ownerLogin: "octo",
-      repoName: "articles",
-      installationId: 123,
-      targetBranch: "main",
-      targetCommit: "first"
-    });
+        repoName: "articles",
+        installationId: 123,
+        targetBranch: "main",
+        desiredState: "active",
+        targetCommit: "first"
+      });
     await object.notify({
       repositoryId: 42,
       ownerLogin: "octo",
-      repoName: "articles",
-      installationId: 123,
-      targetBranch: "main",
-      targetCommit: "second"
-    });
+        repoName: "articles",
+        installationId: 123,
+        targetBranch: "main",
+        desiredState: "active",
+        targetCommit: "second"
+      });
 
     expect(storage.alarm).toBe(61_000);
     await object.alarm();
@@ -180,7 +463,8 @@ describe("RepoSyncStateDurableObject", () => {
         ownerLogin: "octo",
         repoName: "articles",
         installationId: 123,
-        targetBranch: "main"
+        targetBranch: "main",
+        desiredState: "active"
       }
     ]);
     vi.useRealTimers();
@@ -196,6 +480,7 @@ describe("RepoSyncStateDurableObject", () => {
       repoName: "articles",
       installationId: 123,
       targetBranch: "main",
+      desiredState: "active",
       targetCommit: "abc123"
     });
 
@@ -219,6 +504,7 @@ describe("RepoSyncStateDurableObject", () => {
       repoName: "articles",
       installationId: 123,
       targetBranch: "main",
+      desiredState: "active",
       targetCommit: "abc123"
     });
     const claim = await object.claimSync();

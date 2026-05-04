@@ -5,6 +5,7 @@ import worker, { syncRepositoryMessage } from "../src/worker";
 vi.mock("../src/github", () => ({
   createInstallationAccessToken: vi.fn(async () => "token"),
   compareCommits: vi.fn(async () => ({ ok: true, files: [] })),
+  fetchDefaultBranchHead: vi.fn(async () => "head"),
   fetchMarkdownAtCommit: vi.fn(async (_owner: string, _repo: string, path: string) => `# ${path}`),
   listArticleFilesAtCommit: vi.fn(async () => [])
 }));
@@ -40,6 +41,7 @@ class MockRepoSyncStub {
     repoName: "articles",
     installationId: 123,
     targetBranch: "main",
+    desiredState: "active",
     targetCommit: "new",
     lastSyncedCommit: "old",
     lastArticleIndex: []
@@ -95,7 +97,8 @@ function message(): RepoSyncQueueMessage {
     ownerLogin: "octo",
     repoName: "articles",
     installationId: 123,
-    targetBranch: "main"
+    targetBranch: "main",
+    desiredState: "active"
   };
 }
 
@@ -103,6 +106,7 @@ describe("article renderer", () => {
   beforeEach(() => {
     vi.mocked(github.createInstallationAccessToken).mockClear();
     vi.mocked(github.compareCommits).mockClear();
+    vi.mocked(github.fetchDefaultBranchHead).mockClear();
     vi.mocked(github.fetchMarkdownAtCommit).mockClear();
     vi.mocked(github.listArticleFilesAtCommit).mockClear();
   });
@@ -183,6 +187,49 @@ describe("article renderer", () => {
         r2Key: "gh/octo/articles/2026-05-03/latest/index.html"
       }
     ]);
+  });
+
+  it("resolves default branch head before initial active sync without a target commit", async () => {
+    const bucket = new MockR2Bucket();
+    const stub = new MockRepoSyncStub();
+    stub.claim.targetCommit = undefined;
+    stub.claim.lastSyncedCommit = undefined;
+    vi.mocked(github.listArticleFilesAtCommit).mockResolvedValueOnce([
+      {
+        date: "2026-05-03",
+        slug: "latest",
+        path: "articles/2026-05-03/latest/index.md"
+      }
+    ]);
+
+    await syncRepositoryMessage(message(), env(bucket, new MockDurableObjectNamespace(stub)));
+
+    expect(github.fetchDefaultBranchHead).toHaveBeenCalledWith("octo", "articles", "main", "token");
+    expect(github.listArticleFilesAtCommit).toHaveBeenCalledWith("octo", "articles", "head", "token");
+    expect(stub.completed?.result.syncedCommit).toBe("head");
+    expect(bucket.puts[0].key).toBe("gh/octo/articles/2026-05-03/latest/index.html");
+  });
+
+  it("deletes previous R2 objects for inactive repositories without calling GitHub", async () => {
+    const bucket = new MockR2Bucket();
+    const stub = new MockRepoSyncStub();
+    stub.claim.desiredState = "inactive";
+    stub.claim.targetCommit = undefined;
+    stub.claim.lastArticleIndex = [
+      {
+        date: "2026-05-01",
+        slug: "old",
+        path: "articles/2026-05-01/old/index.md",
+        r2Key: "gh/octo/articles/2026-05-01/old/index.html"
+      }
+    ];
+
+    await syncRepositoryMessage(message(), env(bucket, new MockDurableObjectNamespace(stub)));
+
+    expect(github.createInstallationAccessToken).not.toHaveBeenCalled();
+    expect(github.fetchDefaultBranchHead).not.toHaveBeenCalled();
+    expect(bucket.deletes).toEqual(["gh/octo/articles/2026-05-01/old/index.html"]);
+    expect(stub.completed?.result).toEqual({ syncedCommit: undefined, articleIndex: [] });
   });
 
   it("reports failures to the repo sync state without completing the commit", async () => {

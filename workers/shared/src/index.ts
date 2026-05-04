@@ -23,11 +23,14 @@ export interface RepoSyncQueueMessage {
   repoName: string;
   installationId: number;
   targetBranch: string;
+  desiredState: RepoSyncDesiredState;
 }
 
 export interface RepoSyncNotification extends RepoSyncQueueMessage {
-  targetCommit: string;
+  targetCommit?: string;
 }
+
+export type RepoSyncDesiredState = "active" | "inactive" | "deleted";
 
 export interface RepoSyncClaim {
   status: "claimed" | "busy" | "idle" | "retry_later";
@@ -39,13 +42,14 @@ export interface RepoSyncClaim {
   repoName?: string;
   installationId?: number;
   targetBranch?: string;
+  desiredState?: RepoSyncDesiredState;
   targetCommit?: string;
   lastSyncedCommit?: string;
   lastArticleIndex?: ArticleIndexEntry[];
 }
 
 export interface RepoSyncCompleteResult {
-  syncedCommit: string;
+  syncedCommit?: string;
   articleIndex: ArticleIndexEntry[];
 }
 

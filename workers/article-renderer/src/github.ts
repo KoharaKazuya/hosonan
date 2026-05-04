@@ -18,6 +18,25 @@ export interface GitHubArticleFile extends ArticlePath {
   sha?: string;
 }
 
+export async function fetchDefaultBranchHead(
+  owner: string,
+  repo: string,
+  branch: string,
+  token: string
+): Promise<string> {
+  const url = repoApiUrl(owner, repo, `commits/${encodeURIComponent(branch)}`);
+  const response = await githubFetch(url, tokenHeaders(`Bearer ${token}`));
+  if (!response.ok) {
+    throw githubError("Failed to fetch GitHub default branch head", response);
+  }
+
+  const body = (await response.json()) as { sha?: string };
+  if (!body.sha) {
+    throw new Error("GitHub commit response did not include sha.");
+  }
+  return body.sha;
+}
+
 function base64Url(bytes: ArrayBuffer | Uint8Array): string {
   const array = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
   let binary = "";

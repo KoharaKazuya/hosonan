@@ -11,6 +11,7 @@ import {
 import {
   compareCommits,
   createInstallationAccessToken,
+  fetchDefaultBranchHead,
   fetchMarkdownAtCommit,
   listArticleFilesAtCommit,
   type GitHubChangedFile
@@ -59,8 +60,10 @@ export async function syncRepositoryMessage(message: RepoSyncQueueMessage, env: 
   }
 
   try {
-    const token = await createInstallationAccessToken(env, claim.installationId);
-    const result = await syncClaimedRepository(claim, token, env, stub);
+    const result =
+      claim.desiredState === "active"
+        ? await syncActiveRepository({ ...claim, desiredState: "active" }, env, stub)
+        : await syncInactiveRepository(claim, env, stub);
     await postJson(stub, "/complete", { leaseId: claim.leaseId, result });
     return "synced";
   } catch (error) {
@@ -71,7 +74,7 @@ export async function syncRepositoryMessage(message: RepoSyncQueueMessage, env: 
 }
 
 export async function syncClaimedRepository(
-  claim: RequiredClaim,
+  claim: ActiveClaim,
   token: string,
   env: Env,
   stub: DurableObjectStub
@@ -105,8 +108,34 @@ export async function syncClaimedRepository(
   };
 }
 
-async function fullScanSync(
+async function syncActiveRepository(
+  claim: RequiredClaim & { desiredState: "active" },
+  env: Env,
+  stub: DurableObjectStub
+): Promise<RepoSyncCompleteResult> {
+  const token = await createInstallationAccessToken(env, claim.installationId);
+  const targetCommit = claim.targetCommit ?? (await fetchDefaultBranchHead(claim.ownerLogin, claim.repoName, claim.targetBranch, token));
+  return syncClaimedRepository({ ...claim, targetCommit }, token, env, stub);
+}
+
+async function syncInactiveRepository(
   claim: RequiredClaim,
+  env: Env,
+  stub: DurableObjectStub
+): Promise<RepoSyncCompleteResult> {
+  for (const article of claim.lastArticleIndex ?? []) {
+    await ensureLeaseFresh(claim, stub);
+    await env.ARTICLES_BUCKET.delete(article.r2Key);
+  }
+
+  return {
+    syncedCommit: undefined,
+    articleIndex: []
+  };
+}
+
+async function fullScanSync(
+  claim: ActiveClaim,
   token: string,
   env: Env,
   stub: DurableObjectStub
@@ -135,7 +164,7 @@ async function fullScanSync(
 }
 
 async function changedArticlePaths(
-  claim: RequiredClaim,
+  claim: ActiveClaim,
   token: string
 ): Promise<{ upserted: ArticlePath[]; removed: string[] } | null> {
   if (!claim.lastSyncedCommit) {
@@ -221,7 +250,8 @@ function isClaimed(claim: RepoSyncClaim): claim is RequiredClaim {
     typeof claim.ownerLogin === "string" &&
     typeof claim.repoName === "string" &&
     typeof claim.installationId === "number" &&
-    typeof claim.targetCommit === "string"
+    typeof claim.targetBranch === "string" &&
+    (claim.desiredState === "active" || claim.desiredState === "inactive" || claim.desiredState === "deleted")
   );
 }
 
@@ -254,6 +284,13 @@ type RequiredClaim = RepoSyncClaim & {
   ownerLogin: string;
   repoName: string;
   installationId: number;
+  targetBranch: string;
+  desiredState: "active" | "inactive" | "deleted";
+  targetCommit?: string;
+};
+
+type ActiveClaim = RequiredClaim & {
+  desiredState: "active";
   targetCommit: string;
 };
 
