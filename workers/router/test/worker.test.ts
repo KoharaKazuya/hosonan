@@ -70,6 +70,21 @@ describe("router worker", () => {
     expect(web.requests).toHaveLength(0);
   });
 
+  it("delegates auth api paths to the web worker", async () => {
+    const web = new MockService("web\n");
+    const githubWebhook = new MockService("webhook\n");
+    const routerEnv = env(web, githubWebhook);
+
+    await worker.fetch(request("/api/auth/me"), routerEnv);
+    await worker.fetch(request("/api/auth/github/callback"), routerEnv);
+
+    expect(web.requests.map((sentRequest) => new URL(sentRequest.url).pathname)).toEqual([
+      "/api/auth/me",
+      "/api/auth/github/callback"
+    ]);
+    expect(githubWebhook.requests).toHaveLength(0);
+  });
+
   it("treats the trailing-slash GitHub webhook path as the webhook", async () => {
     const web = new MockService("web\n");
     const githubWebhook = new MockService("webhook\n");

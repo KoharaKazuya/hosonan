@@ -6,10 +6,25 @@ import {
   type ServedArticlePath,
   type StoredArticle
 } from "@hosonan/shared";
+import {
+  generateAuthenticationOptions,
+  generateRegistrationOptions,
+  verifyAuthenticationResponse,
+  verifyRegistrationResponse,
+  type AuthenticationResponseJSON,
+  type AuthenticatorTransportFuture,
+  type RegistrationResponseJSON,
+  type WebAuthnCredential
+} from "@simplewebauthn/server";
 import { KISO_CSS } from "./kiso-css";
 
 const CACHE_TTL_SECONDS = 300;
 const HOME_ARTICLE_LIMIT = 10;
+const SESSION_COOKIE_NAME = "__Host-hosonan_session";
+const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
+const CHALLENGE_TTL_SECONDS = 60 * 10;
+const RP_NAME = "Hosonan";
+const PASSKEY_USER_LABEL = "Hosonan user";
 
 const ARTICLE_PAGE_CSS = `
 :root{color-scheme:light dark;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.7;background:#f7f7f8;color:#1f2328}
@@ -83,17 +98,37 @@ export function buildHtmlDocumentSuffix(): string {
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
-    if (request.method !== "GET" && request.method !== "HEAD") {
-      return new Response("method not allowed\n", {
-        status: 405,
-        headers: {
-          Allow: "GET, HEAD",
-          "Content-Type": "text/plain; charset=utf-8"
-        }
-      });
+    const requestUrl = new URL(request.url);
+
+    if (requestUrl.pathname === "/login") {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return methodNotAllowed(["GET", "HEAD"]);
+      }
+      return responseForMethod(await loginPageResponse(request, env), request.method);
     }
 
-    const requestUrl = new URL(request.url);
+    if (requestUrl.pathname === "/signup") {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return methodNotAllowed(["GET", "HEAD"]);
+      }
+      return responseForMethod(await signupPageResponse(request, env), request.method);
+    }
+
+    if (requestUrl.pathname === "/settings") {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        return methodNotAllowed(["GET", "HEAD"]);
+      }
+      return responseForMethod(await settingsPageResponse(request, env), request.method);
+    }
+
+    if (requestUrl.pathname.startsWith("/api/auth/")) {
+      return authApiResponse(request, env);
+    }
+
+    if (request.method !== "GET" && request.method !== "HEAD") {
+      return methodNotAllowed(["GET", "HEAD"]);
+    }
+
     if (requestUrl.pathname === "/") {
       return responseForMethod(await homePageResponse(env, { request }, HOME_ARTICLE_LIMIT), request.method);
     }
@@ -230,6 +265,1026 @@ function channelDisplayName(article: Pick<StoredArticle, "owner_login" | "repo_n
 
 function channelPlaceholderText(displayName: string): string {
   return ([...displayName.trim()][0] ?? "?").toUpperCase();
+}
+
+type AuthEnv = Env & {
+  GITHUB_CLIENT_ID?: string;
+  GITHUB_CLIENT_SECRET?: string;
+};
+
+type UserRecord = {
+  user_id: string;
+  display_name: string | null;
+};
+
+type ChallengeRecord = {
+  challenge_id: string;
+  challenge: string;
+  user_id: string | null;
+  redirect_path: string | null;
+  expires_at: string;
+};
+
+type PasskeyCredentialRecord = {
+  credential_id: string;
+  user_id: string;
+  public_key: string;
+  counter: number;
+  transports: string | null;
+  credential_device_type: string | null;
+  credential_backed_up: number;
+};
+
+type SettingsAuthState = {
+  hasPasskey: boolean;
+  hasGitHub: boolean;
+};
+
+type GitHubTokenResponse = {
+  access_token?: string;
+  error?: string;
+};
+
+type GitHubUserResponse = {
+  id?: number;
+  login?: string;
+  name?: string | null;
+};
+
+async function authApiResponse(request: Request, env: Env): Promise<Response> {
+  const { pathname } = new URL(request.url);
+
+  if (pathname === "/api/auth/me") {
+    return requireMethod(request, ["GET"], () => meResponse(request, env));
+  }
+  if (pathname === "/api/auth/logout") {
+    return requireMethod(request, ["POST"], () => logoutResponse(request, env));
+  }
+  if (pathname === "/api/auth/passkey/register/options") {
+    return requireMethod(request, ["POST"], () => passkeyRegisterOptionsResponse(request, env));
+  }
+  if (pathname === "/api/auth/passkey/register/verify") {
+    return requireMethod(request, ["POST"], () => passkeyRegisterVerifyResponse(request, env));
+  }
+  if (pathname === "/api/auth/passkey/login/options") {
+    return requireMethod(request, ["POST"], () => passkeyLoginOptionsResponse(request, env));
+  }
+  if (pathname === "/api/auth/passkey/login/verify") {
+    return requireMethod(request, ["POST"], () => passkeyLoginVerifyResponse(request, env));
+  }
+  if (pathname === "/api/auth/github/start") {
+    return requireMethod(request, ["GET"], () => githubStartResponse(request, env));
+  }
+  if (pathname === "/api/auth/github/callback") {
+    return requireMethod(request, ["GET"], () => githubCallbackResponse(request, env));
+  }
+
+  return jsonResponse({ error: "not_found" }, 404);
+}
+
+async function requireMethod(
+  request: Request,
+  methods: string[],
+  handler: () => Promise<Response>
+): Promise<Response> {
+  if (!methods.includes(request.method)) {
+    return methodNotAllowed(methods);
+  }
+  return handler();
+}
+
+async function meResponse(request: Request, env: Env): Promise<Response> {
+  const user = await currentUser(request, env);
+  if (!user) {
+    return jsonResponse({ user: null }, 200);
+  }
+
+  return jsonResponse({
+    user: {
+      id: user.user_id,
+      displayName: user.display_name
+    }
+  });
+}
+
+async function logoutResponse(request: Request, env: Env): Promise<Response> {
+  const token = sessionTokenFromRequest(request);
+  if (token) {
+    const sessionHash = await sha256Hex(token);
+    await env.GITHUB_REGISTRY.prepare("UPDATE sessions SET revoked_at = ? WHERE session_hash = ? AND revoked_at IS NULL")
+      .bind(nowIso(), sessionHash)
+      .run();
+  }
+
+  return jsonResponse(
+    { ok: true },
+    200,
+    new Headers({
+      "Set-Cookie": expiredSessionCookie()
+    })
+  );
+}
+
+async function passkeyRegisterOptionsResponse(request: Request, env: Env): Promise<Response> {
+  const current = await currentUser(request, env);
+  const user = current ?? (await createUnnamedUser(env));
+  const credentials = await passkeyCredentialsForUser(env, user.user_id);
+  if (current && credentials.length > 0) {
+    return jsonResponse({ error: "passkey_already_registered" }, 409);
+  }
+  const options = await generateRegistrationOptions({
+    rpName: RP_NAME,
+    rpID: rpIdFromRequest(request),
+    userName: PASSKEY_USER_LABEL,
+    userID: new TextEncoder().encode(user.user_id),
+    userDisplayName: PASSKEY_USER_LABEL,
+    attestationType: "none",
+    authenticatorSelection: {
+      residentKey: "required",
+      requireResidentKey: true,
+      userVerification: "preferred"
+    },
+    excludeCredentials: credentials.map((credential) => ({
+      id: credential.credential_id,
+      transports: parseTransports(credential.transports)
+    }))
+  });
+
+  await createChallenge(env, {
+    kind: "passkey_register",
+    challenge: options.challenge,
+    userId: user.user_id
+  });
+
+  return jsonResponse(options);
+}
+
+async function passkeyRegisterVerifyResponse(request: Request, env: Env): Promise<Response> {
+  const current = await currentUser(request, env);
+  const body = await readJsonObject(request);
+  const response = body.response as RegistrationResponseJSON | undefined;
+  if (!response) {
+    return jsonResponse({ error: "invalid_request" }, 400);
+  }
+
+  const receivedChallenge = challengeFromRegistrationResponse(response);
+  if (!receivedChallenge) {
+    return jsonResponse({ error: "invalid_request" }, 400);
+  }
+
+  const challenge = await challengeByValue(env, "passkey_register", receivedChallenge);
+  if (!challenge || !challenge.user_id) {
+    return jsonResponse({ error: "challenge_not_found" }, 400);
+  }
+  if (current && challenge.user_id !== current.user_id) {
+    return jsonResponse({ error: "challenge_not_found" }, 400);
+  }
+
+  const user = current ?? (await userById(env, challenge.user_id));
+  if (!user) {
+    return jsonResponse({ error: "user_not_found" }, 500);
+  }
+
+  const verification = await verifyRegistrationResponse({
+    response,
+    expectedChallenge: challenge.challenge,
+    expectedOrigin: originFromRequest(request),
+    expectedRPID: rpIdFromRequest(request),
+    requireUserVerification: false
+  });
+  if (!verification.verified) {
+    return jsonResponse({ error: "verification_failed" }, 400);
+  }
+
+  const { credential, credentialDeviceType, credentialBackedUp } = verification.registrationInfo;
+  const savedAt = nowIso();
+  await env.GITHUB_REGISTRY.prepare(
+    `INSERT INTO passkey_credentials
+       (credential_id, user_id, public_key, counter, transports, credential_device_type, credential_backed_up, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(credential_id) DO UPDATE SET
+       user_id = excluded.user_id,
+       public_key = excluded.public_key,
+       counter = excluded.counter,
+       transports = excluded.transports,
+       credential_device_type = excluded.credential_device_type,
+       credential_backed_up = excluded.credential_backed_up,
+       updated_at = excluded.updated_at`
+  )
+    .bind(
+      credential.id,
+      user.user_id,
+      bytesToBase64Url(credential.publicKey),
+      credential.counter,
+      JSON.stringify(credential.transports ?? []),
+      credentialDeviceType,
+      credentialBackedUp ? 1 : 0,
+      savedAt,
+      savedAt
+    )
+    .run();
+  await consumeChallenge(env, challenge.challenge_id);
+
+  return current ? userJsonResponse(user) : sessionJsonResponse(env, user);
+}
+
+async function passkeyLoginOptionsResponse(request: Request, env: Env): Promise<Response> {
+  const options = await generateAuthenticationOptions({
+    rpID: rpIdFromRequest(request),
+    userVerification: "preferred"
+  });
+
+  await createChallenge(env, {
+    kind: "passkey_login",
+    challenge: options.challenge
+  });
+
+  return jsonResponse(options);
+}
+
+async function passkeyLoginVerifyResponse(request: Request, env: Env): Promise<Response> {
+  const body = await readJsonObject(request);
+  const response = body.response as AuthenticationResponseJSON | undefined;
+  if (!response) {
+    return jsonResponse({ error: "invalid_request" }, 400);
+  }
+
+  const credentialRecord = await env.GITHUB_REGISTRY.prepare(
+    "SELECT credential_id, user_id, public_key, counter, transports, credential_device_type, credential_backed_up FROM passkey_credentials WHERE credential_id = ?"
+  )
+    .bind(response.id)
+    .first<PasskeyCredentialRecord>();
+  if (!credentialRecord) {
+    return jsonResponse({ error: "credential_not_found" }, 404);
+  }
+
+  const receivedChallenge = challengeFromAuthenticationResponse(response);
+  if (!receivedChallenge) {
+    return jsonResponse({ error: "invalid_request" }, 400);
+  }
+
+  const challenge = await challengeByValue(env, "passkey_login", receivedChallenge);
+  if (!challenge) {
+    return jsonResponse({ error: "challenge_not_found" }, 400);
+  }
+  if (challenge.user_id && challenge.user_id !== credentialRecord.user_id) {
+    return jsonResponse({ error: "challenge_not_found" }, 400);
+  }
+
+  const verification = await verifyAuthenticationResponse({
+    response,
+    expectedChallenge: challenge.challenge,
+    expectedOrigin: originFromRequest(request),
+    expectedRPID: rpIdFromRequest(request),
+    credential: webAuthnCredentialFromRecord(credentialRecord),
+    requireUserVerification: false
+  });
+  if (!verification.verified) {
+    return jsonResponse({ error: "verification_failed" }, 400);
+  }
+
+  await env.GITHUB_REGISTRY.prepare("UPDATE passkey_credentials SET counter = ?, updated_at = ? WHERE credential_id = ?")
+    .bind(verification.authenticationInfo.newCounter, nowIso(), credentialRecord.credential_id)
+    .run();
+  await consumeChallenge(env, challenge.challenge_id);
+
+  const user = await userById(env, credentialRecord.user_id);
+  if (!user) {
+    return jsonResponse({ error: "user_not_found" }, 500);
+  }
+
+  return sessionJsonResponse(env, user);
+}
+
+async function githubStartResponse(request: Request, env: Env): Promise<Response> {
+  const authEnv = env as AuthEnv;
+  if (!authEnv.GITHUB_CLIENT_ID) {
+    return jsonResponse({ error: "github_oauth_not_configured" }, 500);
+  }
+
+  const current = await currentUser(request, env);
+  const requestUrl = new URL(request.url);
+  const redirectPath = safeRedirectPath(requestUrl.searchParams.get("redirectTo"));
+  const state = randomToken();
+  await createChallenge(env, {
+    kind: "github_oauth",
+    challenge: await sha256Hex(state),
+    userId: current?.user_id ?? null,
+    redirectPath
+  });
+
+  const githubUrl = new URL("https://github.com/login/oauth/authorize");
+  githubUrl.searchParams.set("client_id", authEnv.GITHUB_CLIENT_ID);
+  githubUrl.searchParams.set("state", state);
+  githubUrl.searchParams.set("redirect_uri", `${originFromRequest(request)}/api/auth/github/callback`);
+
+  return Response.redirect(githubUrl.toString(), 302);
+}
+
+async function githubCallbackResponse(request: Request, env: Env): Promise<Response> {
+  const authEnv = env as AuthEnv;
+  if (!authEnv.GITHUB_CLIENT_ID || !authEnv.GITHUB_CLIENT_SECRET) {
+    return jsonResponse({ error: "github_oauth_not_configured" }, 500);
+  }
+
+  const requestUrl = new URL(request.url);
+  const code = requestUrl.searchParams.get("code");
+  const state = requestUrl.searchParams.get("state");
+  if (!code || !state) {
+    return jsonResponse({ error: "invalid_request" }, 400);
+  }
+
+  const challenge = await challengeByValue(env, "github_oauth", await sha256Hex(state));
+  if (!challenge) {
+    return jsonResponse({ error: "invalid_state" }, 400);
+  }
+  await consumeChallenge(env, challenge.challenge_id);
+
+  const tokenResponse = await fetch("https://github.com/login/oauth/access_token", {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "User-Agent": "hosonan"
+    },
+    body: JSON.stringify({
+      client_id: authEnv.GITHUB_CLIENT_ID,
+      client_secret: authEnv.GITHUB_CLIENT_SECRET,
+      code,
+      redirect_uri: `${originFromRequest(request)}/api/auth/github/callback`,
+      state
+    })
+  });
+  if (!tokenResponse.ok) {
+    return jsonResponse({ error: "github_token_failed" }, 502);
+  }
+
+  const tokenBody = (await tokenResponse.json()) as GitHubTokenResponse;
+  if (!tokenBody.access_token || tokenBody.error) {
+    return jsonResponse({ error: "github_token_failed" }, 502);
+  }
+
+  const githubUserResponse = await fetch("https://api.github.com/user", {
+    headers: {
+      Accept: "application/vnd.github+json",
+      Authorization: `Bearer ${tokenBody.access_token}`,
+      "User-Agent": "hosonan",
+      "X-GitHub-Api-Version": "2022-11-28"
+    }
+  });
+  if (!githubUserResponse.ok) {
+    return jsonResponse({ error: "github_user_failed" }, 502);
+  }
+
+  const githubUser = (await githubUserResponse.json()) as GitHubUserResponse;
+  if (typeof githubUser.id !== "number" || !githubUser.login) {
+    return jsonResponse({ error: "github_user_failed" }, 502);
+  }
+
+  const user =
+    challenge.user_id === null
+      ? await ensureGitHubUser(env, {
+          id: githubUser.id,
+          login: githubUser.login,
+          name: githubUser.name
+        })
+      : await linkGitHubIdentityToUser(env, challenge.user_id, {
+          id: githubUser.id,
+          login: githubUser.login,
+          name: githubUser.name
+        });
+  if (!user) {
+    return jsonResponse({ error: "identity_already_linked" }, 409);
+  }
+  return sessionRedirectResponse(env, user, challenge.redirect_path ?? "/");
+}
+
+async function currentUser(request: Request, env: Env): Promise<UserRecord | null> {
+  const token = sessionTokenFromRequest(request);
+  if (!token) {
+    return null;
+  }
+
+  const sessionHash = await sha256Hex(token);
+  return env.GITHUB_REGISTRY.prepare(
+    `SELECT u.user_id, u.display_name
+     FROM sessions s
+     JOIN users u ON u.user_id = s.user_id
+     WHERE s.session_hash = ? AND s.revoked_at IS NULL AND s.expires_at > ?`
+  )
+    .bind(sessionHash, nowIso())
+    .first<UserRecord>();
+}
+
+async function createUnnamedUser(env: Env): Promise<UserRecord> {
+  const userId = crypto.randomUUID();
+  const timestamp = nowIso();
+  await env.GITHUB_REGISTRY.prepare("INSERT INTO users (user_id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?)")
+    .bind(userId, null, timestamp, timestamp)
+    .run();
+  return {
+    user_id: userId,
+    display_name: null
+  };
+}
+
+async function ensureGitHubUser(env: Env, githubUser: GitHubUserResponse & { id: number; login: string }): Promise<UserRecord> {
+  const providerUserId = String(githubUser.id);
+  const existing = await userByIdentity(env, "github", providerUserId);
+  if (existing) {
+    await env.GITHUB_REGISTRY.prepare(
+      "UPDATE auth_identities SET provider_username = ?, updated_at = ? WHERE provider = 'github' AND provider_user_id = ?"
+    )
+      .bind(githubUser.login, nowIso(), providerUserId)
+      .run();
+    return existing;
+  }
+
+  const user = await createUser(env, githubUser.name ?? githubUser.login);
+  const timestamp = nowIso();
+  await env.GITHUB_REGISTRY.prepare(
+    `INSERT INTO auth_identities (provider, provider_user_id, user_id, provider_username, created_at, updated_at)
+     VALUES ('github', ?, ?, ?, ?, ?)`
+  )
+    .bind(providerUserId, user.user_id, githubUser.login, timestamp, timestamp)
+    .run();
+  return user;
+}
+
+async function linkGitHubIdentityToUser(
+  env: Env,
+  userId: string,
+  githubUser: GitHubUserResponse & { id: number; login: string }
+): Promise<UserRecord | null> {
+  const providerUserId = String(githubUser.id);
+  const existing = await userByIdentity(env, "github", providerUserId);
+  if (existing && existing.user_id !== userId) {
+    return null;
+  }
+
+  const user = await userById(env, userId);
+  if (!user) {
+    return null;
+  }
+
+  const timestamp = nowIso();
+  if (existing) {
+    await env.GITHUB_REGISTRY.prepare(
+      "UPDATE auth_identities SET provider_username = ?, updated_at = ? WHERE provider = 'github' AND provider_user_id = ?"
+    )
+      .bind(githubUser.login, timestamp, providerUserId)
+      .run();
+    return user;
+  }
+
+  await env.GITHUB_REGISTRY.prepare(
+    `INSERT INTO auth_identities (provider, provider_user_id, user_id, provider_username, created_at, updated_at)
+     VALUES ('github', ?, ?, ?, ?, ?)`
+  )
+    .bind(providerUserId, user.user_id, githubUser.login, timestamp, timestamp)
+    .run();
+  return user;
+}
+
+async function createUser(env: Env, displayName: string | null): Promise<UserRecord> {
+  const userId = crypto.randomUUID();
+  const timestamp = nowIso();
+  await env.GITHUB_REGISTRY.prepare("INSERT INTO users (user_id, display_name, created_at, updated_at) VALUES (?, ?, ?, ?)")
+    .bind(userId, displayName, timestamp, timestamp)
+    .run();
+  return {
+    user_id: userId,
+    display_name: displayName
+  };
+}
+
+async function userById(env: Env, userId: string): Promise<UserRecord | null> {
+  return env.GITHUB_REGISTRY.prepare("SELECT user_id, display_name FROM users WHERE user_id = ?")
+    .bind(userId)
+    .first<UserRecord>();
+}
+
+async function userByIdentity(env: Env, provider: string, providerUserId: string): Promise<UserRecord | null> {
+  return env.GITHUB_REGISTRY.prepare(
+    `SELECT u.user_id, u.display_name
+     FROM auth_identities i
+     JOIN users u ON u.user_id = i.user_id
+     WHERE i.provider = ? AND i.provider_user_id = ?`
+  )
+    .bind(provider, providerUserId)
+    .first<UserRecord>();
+}
+
+async function passkeyCredentialsForUser(env: Env, userId: string): Promise<PasskeyCredentialRecord[]> {
+  const result = await env.GITHUB_REGISTRY.prepare(
+    "SELECT credential_id, user_id, public_key, counter, transports, credential_device_type, credential_backed_up FROM passkey_credentials WHERE user_id = ?"
+  )
+    .bind(userId)
+    .all<PasskeyCredentialRecord>();
+  return result.results ?? [];
+}
+
+async function settingsAuthState(env: Env, userId: string): Promise<SettingsAuthState> {
+  const passkey = await env.GITHUB_REGISTRY.prepare("SELECT COUNT(*) AS count FROM passkey_credentials WHERE user_id = ?")
+    .bind(userId)
+    .first<{ count: number }>();
+  const github = await env.GITHUB_REGISTRY.prepare(
+    "SELECT provider_user_id FROM auth_identities WHERE provider = 'github' AND user_id = ? LIMIT 1"
+  )
+    .bind(userId)
+    .first<{ provider_user_id: string }>();
+
+  return {
+    hasPasskey: (passkey?.count ?? 0) > 0,
+    hasGitHub: github !== null
+  };
+}
+
+async function createChallenge(
+  env: Env,
+  input: {
+    kind: string;
+    challenge: string;
+    userId?: string | null;
+    redirectPath?: string | null;
+  }
+): Promise<void> {
+  const timestamp = nowIso();
+  await env.GITHUB_REGISTRY.prepare(
+    `INSERT INTO auth_challenges
+       (challenge_id, kind, challenge, user_id, redirect_path, expires_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(
+      crypto.randomUUID(),
+      input.kind,
+      input.challenge,
+      input.userId ?? null,
+      input.redirectPath ?? null,
+      new Date(Date.now() + CHALLENGE_TTL_SECONDS * 1000).toISOString(),
+      timestamp
+    )
+    .run();
+}
+
+async function latestChallenge(env: Env, kind: string, userId: string): Promise<ChallengeRecord | null> {
+  return env.GITHUB_REGISTRY.prepare(
+    `SELECT challenge_id, challenge, user_id, redirect_path, expires_at
+     FROM auth_challenges
+     WHERE kind = ? AND (user_id = ? OR user_id IS NULL) AND consumed_at IS NULL AND expires_at > ?
+     ORDER BY created_at DESC
+     LIMIT 1`
+  )
+    .bind(kind, userId, nowIso())
+    .first<ChallengeRecord>();
+}
+
+async function challengeByValue(env: Env, kind: string, challenge: string): Promise<ChallengeRecord | null> {
+  return env.GITHUB_REGISTRY.prepare(
+    `SELECT challenge_id, challenge, user_id, redirect_path, expires_at
+     FROM auth_challenges
+     WHERE kind = ? AND challenge = ? AND consumed_at IS NULL AND expires_at > ?
+     LIMIT 1`
+  )
+    .bind(kind, challenge, nowIso())
+    .first<ChallengeRecord>();
+}
+
+async function consumeChallenge(env: Env, challengeId: string): Promise<void> {
+  await env.GITHUB_REGISTRY.prepare("UPDATE auth_challenges SET consumed_at = ? WHERE challenge_id = ?")
+    .bind(nowIso(), challengeId)
+    .run();
+}
+
+async function sessionJsonResponse(env: Env, user: UserRecord): Promise<Response> {
+  const { cookie } = await createSession(env, user.user_id);
+  return jsonResponse(
+    {
+      user: {
+        id: user.user_id,
+        displayName: user.display_name
+      }
+    },
+    200,
+    new Headers({ "Set-Cookie": cookie })
+  );
+}
+
+function userJsonResponse(user: UserRecord): Response {
+  return jsonResponse({
+    user: {
+      id: user.user_id,
+      displayName: user.display_name
+    }
+  });
+}
+
+async function sessionRedirectResponse(env: Env, user: UserRecord, redirectPath: string): Promise<Response> {
+  const { cookie } = await createSession(env, user.user_id);
+  return new Response(null, {
+    status: 303,
+    headers: {
+      Location: safeRedirectPath(redirectPath),
+      "Set-Cookie": cookie
+    }
+  });
+}
+
+async function createSession(env: Env, userId: string): Promise<{ cookie: string }> {
+  const token = randomToken(32);
+  const timestamp = nowIso();
+  const expiresAt = new Date(Date.now() + SESSION_MAX_AGE_SECONDS * 1000).toISOString();
+  await env.GITHUB_REGISTRY.prepare(
+    "INSERT INTO sessions (session_id, session_hash, user_id, expires_at, created_at) VALUES (?, ?, ?, ?, ?)"
+  )
+    .bind(crypto.randomUUID(), await sha256Hex(token), userId, expiresAt, timestamp)
+    .run();
+  return { cookie: sessionCookie(token) };
+}
+
+async function settingsPageResponse(request: Request, env: Env): Promise<Response> {
+  const user = await currentUser(request, env);
+  if (!user) {
+    return Response.redirect(`${originFromRequest(request)}/login?redirectTo=%2Fsettings`, 303);
+  }
+
+  return new Response(buildSettingsPage(user, await settingsAuthState(env, user.user_id)), {
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "text/html; charset=utf-8"
+    }
+  });
+}
+
+async function signupPageResponse(request: Request, env: Env): Promise<Response> {
+  const user = await currentUser(request, env);
+  return new Response(user ? buildSignedInPage("アカウント登録", user) : buildSignupPage(request), {
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "text/html; charset=utf-8"
+    }
+  });
+}
+
+async function loginPageResponse(request: Request, env: Env): Promise<Response> {
+  const user = await currentUser(request, env);
+  return new Response(user ? buildSignedInPage("ログイン", user) : buildLoginPage(request), {
+    headers: {
+      "Cache-Control": "no-store",
+      "Content-Type": "text/html; charset=utf-8"
+    }
+  });
+}
+
+function authPageCss(): string {
+  return `
+:root{color-scheme:light dark;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.6;background:#f7f7f8;color:#1f2328}
+.auth{width:min(100% - 32px,420px);margin:0 auto;padding:48px 0}
+.auth h1{margin:0 0 20px;font-size:1.7rem;line-height:1.2}
+.account{margin:0 0 18px;color:#57606a;overflow-wrap:anywhere}
+.actions{display:flex;flex-wrap:wrap;gap:10px;margin:18px 0}
+.button{min-height:42px;border:1px solid #0969da;border-radius:6px;padding:8px 12px;font:inherit;font-weight:600;background:#0969da;color:#fff;cursor:pointer;text-decoration:none}
+.button.secondary{border-color:#d0d7de;background:#fff;color:#1f2328}
+.status{min-height:1.5em;color:#57606a}
+@media (prefers-color-scheme:dark){:root{background:#0d1117;color:#f0f6fc}.account,.status{color:#8b949e}.button.secondary{border-color:#30363d;background:#161b22;color:#f0f6fc}}
+`;
+}
+
+function buildLoginPage(request: Request): string {
+  const redirectTo = safeRedirectPath(new URL(request.url).searchParams.get("redirectTo"));
+  return `<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ログイン - Hosonan</title>
+${buildInlineStyle(authPageCss())}
+</head>
+<body>
+<main class="auth">
+<h1>Hosonan</h1>
+<div class="actions">
+<button class="button" type="button" id="login-passkey">Passkey でログイン</button>
+<a class="button secondary" href="/api/auth/github/start?redirectTo=${encodeURIComponent(redirectTo)}">GitHub でログイン</a>
+</div>
+<p><a href="/signup">アカウント登録</a></p>
+<p class="status" id="status"></p>
+</main>
+<script type="module">
+import { startAuthentication } from "https://esm.sh/@simplewebauthn/browser@13.3.0";
+const redirectTo = ${JSON.stringify(redirectTo)};
+const status = document.querySelector("#status");
+function setStatus(message){ status.textContent = message; }
+async function postJson(path, body){
+  const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const json = await response.json();
+  if (!response.ok) throw new Error(json.error || "request_failed");
+  return json;
+}
+document.querySelector("#login-passkey").addEventListener("click", async () => {
+  try {
+    setStatus("認証しています");
+    const options = await postJson("/api/auth/passkey/login/options", {});
+    const response = await startAuthentication({ optionsJSON: options });
+    await postJson("/api/auth/passkey/login/verify", { response });
+    location.href = redirectTo;
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "ログインできませんでした");
+  }
+});
+</script>
+</body>
+</html>`;
+}
+
+function buildSignupPage(request: Request): string {
+  const redirectTo = safeRedirectPath(new URL(request.url).searchParams.get("redirectTo"));
+  return `<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>アカウント登録 - Hosonan</title>
+${buildInlineStyle(authPageCss())}
+</head>
+<body>
+<main class="auth">
+<h1>アカウント登録</h1>
+<div class="actions">
+<button class="button" type="button" id="register-passkey">Passkey で登録</button>
+<a class="button secondary" href="/api/auth/github/start?redirectTo=${encodeURIComponent(redirectTo)}">GitHub で登録</a>
+</div>
+<p><a href="/login">ログイン</a></p>
+<p class="status" id="status"></p>
+</main>
+<script type="module">
+import { startRegistration } from "https://esm.sh/@simplewebauthn/browser@13.3.0";
+const redirectTo = ${JSON.stringify(redirectTo)};
+const status = document.querySelector("#status");
+function setStatus(message){ status.textContent = message; }
+async function postJson(path, body){
+  const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const json = await response.json();
+  if (!response.ok) throw new Error(json.error || "request_failed");
+  return json;
+}
+document.querySelector("#register-passkey").addEventListener("click", async () => {
+  try {
+    setStatus("登録しています");
+    const options = await postJson("/api/auth/passkey/register/options", {});
+    const response = await startRegistration({ optionsJSON: options });
+    await postJson("/api/auth/passkey/register/verify", { response });
+    location.href = redirectTo;
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "登録できませんでした");
+  }
+});
+</script>
+</body>
+</html>`;
+}
+
+function buildSignedInPage(title: string, user: UserRecord): string {
+  return `<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHtml(title)} - Hosonan</title>
+${buildInlineStyle(authPageCss())}
+</head>
+<body>
+<main class="auth">
+<h1>Hosonan</h1>
+<p class="account">ログイン済み: ${escapeHtml(accountLabel(user))}</p>
+<div class="actions">
+<a class="button" href="/settings">設定を開く</a>
+<button class="button secondary" type="button" id="logout">ログアウト</button>
+</div>
+<p class="status" id="status"></p>
+</main>
+<script type="module">
+const status = document.querySelector("#status");
+document.querySelector("#logout").addEventListener("click", async () => {
+  const response = await fetch("/api/auth/logout", { method: "POST" });
+  if (response.ok) {
+    location.href = "/login";
+    return;
+  }
+  status.textContent = "ログアウトできませんでした";
+});
+</script>
+</body>
+</html>`;
+}
+
+function buildSettingsPage(user: UserRecord, authState: SettingsAuthState): string {
+  const passkeyControl = authState.hasPasskey
+    ? `<button class="button" type="button" disabled>Passkey 登録済み</button>`
+    : `<button class="button" type="button" id="register-passkey">Passkey を追加</button>`;
+  const githubControl = authState.hasGitHub
+    ? `<button class="button secondary" type="button" disabled>GitHub 連携済み</button>`
+    : `<a class="button secondary" href="/api/auth/github/start?redirectTo=%2Fsettings">GitHub を連携</a>`;
+  return `<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>設定 - Hosonan</title>
+${buildInlineStyle(`
+:root{color-scheme:light dark;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.6;background:#f7f7f8;color:#1f2328}
+.settings{width:min(100% - 32px,560px);margin:0 auto;padding:48px 0}
+.settings h1{margin:0 0 10px;font-size:1.7rem;line-height:1.2}
+.account{margin:0 0 24px;color:#57606a}
+.section{padding:20px 0;border-top:1px solid #d0d7de}
+.section h2{margin:0 0 12px;font-size:1.1rem}
+.actions{display:flex;flex-wrap:wrap;gap:10px}
+.button{min-height:42px;border:1px solid #0969da;border-radius:6px;padding:8px 12px;font:inherit;font-weight:600;background:#0969da;color:#fff;cursor:pointer;text-decoration:none}
+.button.secondary{border-color:#d0d7de;background:#fff;color:#1f2328}
+.button:disabled{border-color:#d0d7de;background:#eaeef2;color:#57606a;cursor:default}
+.status{min-height:1.5em;color:#57606a}
+@media (prefers-color-scheme:dark){:root{background:#0d1117;color:#f0f6fc}.account,.status{color:#8b949e}.section{border-color:#30363d}.button.secondary{border-color:#30363d;background:#161b22;color:#f0f6fc}.button:disabled{border-color:#30363d;background:#21262d;color:#8b949e}}
+`)}
+</head>
+<body>
+<main class="settings">
+<h1>設定</h1>
+<p class="account">${escapeHtml(accountLabel(user))}</p>
+<section class="section">
+<h2>認証方法</h2>
+<div class="actions">
+${passkeyControl}
+${githubControl}
+</div>
+</section>
+<p class="status" id="status"></p>
+</main>
+${authState.hasPasskey ? "" : settingsPasskeyScript()}
+</body>
+</html>`;
+}
+
+function settingsPasskeyScript(): string {
+  return `<script type="module">
+import { startRegistration } from "https://esm.sh/@simplewebauthn/browser@13.3.0";
+const status = document.querySelector("#status");
+function setStatus(message){ status.textContent = message; }
+async function postJson(path, body){
+  const response = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const json = await response.json();
+  if (!response.ok) throw new Error(json.error || "request_failed");
+  return json;
+}
+document.querySelector("#register-passkey").addEventListener("click", async () => {
+  try {
+    setStatus("登録しています");
+    const options = await postJson("/api/auth/passkey/register/options", {});
+    const response = await startRegistration({ optionsJSON: options });
+    await postJson("/api/auth/passkey/register/verify", { response });
+    location.reload();
+  } catch (error) {
+    setStatus(error instanceof Error ? error.message : "登録できませんでした");
+  }
+});
+</script>`;
+}
+
+function accountLabel(user: UserRecord): string {
+  return user.display_name ?? "アカウント";
+}
+
+function webAuthnCredentialFromRecord(record: PasskeyCredentialRecord): WebAuthnCredential {
+  return {
+    id: record.credential_id,
+    publicKey: base64UrlToBytes(record.public_key) as Uint8Array<ArrayBuffer>,
+    counter: record.counter,
+    transports: parseTransports(record.transports)
+  };
+}
+
+function parseTransports(value: string | null): AuthenticatorTransportFuture[] | undefined {
+  if (!value) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? (parsed as AuthenticatorTransportFuture[]) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function challengeFromAuthenticationResponse(response: AuthenticationResponseJSON): string | null {
+  try {
+    const clientData = JSON.parse(new TextDecoder().decode(base64UrlToBytes(response.response.clientDataJSON)));
+    return typeof clientData.challenge === "string" ? clientData.challenge : null;
+  } catch {
+    return null;
+  }
+}
+
+function challengeFromRegistrationResponse(response: RegistrationResponseJSON): string | null {
+  try {
+    const clientData = JSON.parse(new TextDecoder().decode(base64UrlToBytes(response.response.clientDataJSON)));
+    return typeof clientData.challenge === "string" ? clientData.challenge : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readJsonObject(request: Request): Promise<Record<string, unknown>> {
+  try {
+    const value = await request.json();
+    return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function safeRedirectPath(value: string | null): string {
+  if (!value || !value.startsWith("/") || value.startsWith("//")) {
+    return "/";
+  }
+  return value;
+}
+
+function sessionTokenFromRequest(request: Request): string | null {
+  const cookie = request.headers.get("Cookie");
+  if (!cookie) {
+    return null;
+  }
+
+  for (const part of cookie.split(";")) {
+    const [name, ...valueParts] = part.trim().split("=");
+    if (name === SESSION_COOKIE_NAME) {
+      return valueParts.join("=") || null;
+    }
+  }
+  return null;
+}
+
+function sessionCookie(token: string): string {
+  return `${SESSION_COOKIE_NAME}=${token}; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=${SESSION_MAX_AGE_SECONDS}`;
+}
+
+function expiredSessionCookie(): string {
+  return `${SESSION_COOKIE_NAME}=; Secure; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`;
+}
+
+function methodNotAllowed(methods: string[]): Response {
+  return new Response("method not allowed\n", {
+    status: 405,
+    headers: {
+      Allow: methods.join(", "),
+      "Content-Type": "text/plain; charset=utf-8"
+    }
+  });
+}
+
+function jsonResponse(value: unknown, status = 200, headers = new Headers()): Response {
+  headers.set("Content-Type", "application/json; charset=utf-8");
+  return new Response(JSON.stringify(value), { status, headers });
+}
+
+function originFromRequest(request: Request): string {
+  return new URL(request.url).origin;
+}
+
+function rpIdFromRequest(request: Request): string {
+  return new URL(request.url).hostname;
+}
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function randomToken(bytes = 24): string {
+  const array = new Uint8Array(bytes);
+  crypto.getRandomValues(array);
+  return bytesToBase64Url(array);
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function bytesToBase64Url(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+function base64UrlToBytes(value: string): Uint8Array {
+  const base64 = value.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(value.length / 4) * 4, "=");
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
 }
 
 function buildHtmlDocumentStream(article: ServedArticlePath, body: ReadableStream<Uint8Array>): ReadableStream<Uint8Array> {

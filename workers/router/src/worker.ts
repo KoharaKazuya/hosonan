@@ -1,4 +1,5 @@
 const GITHUB_WEBHOOK_PATHS = new Set(["/api/github/webhook", "/api/github/webhook/"]);
+const AUTH_API_PREFIX = "/api/auth/";
 
 export default {
   fetch(request: Request, env: Env): Promise<Response> | Response {
@@ -6,6 +7,10 @@ export default {
 
     if (GITHUB_WEBHOOK_PATHS.has(pathname)) {
       return env.GITHUB_WEBHOOK.fetch(request);
+    }
+
+    if (pathname.startsWith(AUTH_API_PREFIX)) {
+      return env.WEB.fetch(request);
     }
 
     if (pathname === "/api" || pathname.startsWith("/api/")) {
