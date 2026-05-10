@@ -90,7 +90,7 @@ $ /opt/hosonan/entrypoint.sh
 - Docker container action 自体を隔離境界として扱い、Codex CLI 側の承認と sandbox をバイパス
 - `draft/index.md` と `draft/thumbnail.webp` の生成
 - `thumbnail.webp` が WebP かつ 1200x630px であることの検証
-- `index.md` の front matter から `slug` を検証
+- `index.md` の front matter から `title`、`summary`、`slug` を検証
 - `articles/YYYY-MM-DD/<topic-slug>/` への生成物配置
 
 出力先は `articles/YYYY-MM-DD/<topic-slug>/index.md` と `articles/YYYY-MM-DD/<topic-slug>/thumbnail.webp` です。同名ディレクトリがすでにある場合は、既存ディレクトリを上書きせず、末尾に連番を付けます。生成開始時に `draft/` が空でない場合、スクリプトは既存内容を上書きせずに停止します。

@@ -42,7 +42,7 @@ find "$articles_dir" -type f -name '*.md' -print0 |
       continue
     fi
 
-    title="$(
+    metadata="$(
       awk '
         NR == 1 {
           if ($0 != "---") {
@@ -56,21 +56,28 @@ find "$articles_dir" -type f -name '*.md' -print0 |
           exit
         }
 
-        in_front_matter && /^title:[[:space:]]*/ {
+        in_front_matter && /^(title|summary):[[:space:]]*/ {
+          key = $0
+          sub(/:.*/, "", key)
           value = $0
-          sub(/^title:[[:space:]]*/, "", value)
+          sub(/^[^:]+:[[:space:]]*/, "", value)
           gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
           if (value ~ /^".*"$/ || value ~ /^\047.*\047$/) {
             value = substr(value, 2, length(value) - 2)
           }
-          print value
-          exit
+          values[key] = value
+        }
+
+        END {
+          if ("title" in values) {
+            print values["title"] "\t" values["summary"]
+          }
         }
       ' "$article_file"
     )"
 
-    if [[ -n "$title" ]]; then
-      printf '%s\t%s\t%s\n' "$article_date" "$article_file" "$title"
+    if [[ -n "$metadata" ]]; then
+      printf '%s\t%s\t%s\n' "$article_date" "$article_file" "$metadata"
     fi
   done |
   sort -t '	' -k1,1r -k2,2 |

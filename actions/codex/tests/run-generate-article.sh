@@ -59,6 +59,9 @@ if [[ "${MOCK_INDEX:-yes}" == "yes" ]]; then
   {
     printf -- '---\n'
     printf 'title: %s\n' "${MOCK_TITLE:-Mock Article}"
+    if [[ "${MOCK_SUMMARY_PRESENT:-yes}" == "yes" ]]; then
+      printf 'summary: %s\n' "${MOCK_SUMMARY:-Mock article summary}"
+    fi
     if [[ "${MOCK_SLUG_PRESENT:-yes}" == "yes" ]]; then
       printf 'slug: %s\n' "${MOCK_SLUG:-mock-article}"
     fi
@@ -199,9 +202,9 @@ mkdir -p \
   "${titles_fixture}/articles/misc/no-date"
 printf -- '---\ntitle: Old News\n---\n\n# Body\n' > "${titles_fixture}/articles/2026-04-28/old/index.md"
 printf -- '---\ntitle: Boundary News\n---\n\n# Body\n' > "${titles_fixture}/articles/2026-04-29/boundary/index.md"
-printf -- '---\ntitle: Zebra News\n---\n\n# Body\n' > "${titles_fixture}/articles/2026-05-05/zebra/index.md"
-printf -- '---\ntitle: "Quoted News"\n---\n\n# Body\n' > "${titles_fixture}/articles/2026-05-03/quoted/quoted.md"
-printf -- '---\ntitle: '\''Single Quoted News'\''\n---\n\n# Body\n' > "${titles_fixture}/articles/2026-05-04/single/single.md"
+printf -- '---\ntitle: Zebra News\nsummary: Zebra summary\n---\n\n# Body\n' > "${titles_fixture}/articles/2026-05-05/zebra/index.md"
+printf -- '---\ntitle: "Quoted News"\nsummary: "Quoted summary"\n---\n\n# Body\n' > "${titles_fixture}/articles/2026-05-03/quoted/quoted.md"
+printf -- '---\ntitle: '\''Single Quoted News'\''\nsummary: '\''Single quoted summary'\''\n---\n\n# Body\n' > "${titles_fixture}/articles/2026-05-04/single/single.md"
 printf -- '---\nslug: missing-title\n---\n\n# Missing title\n' > "${titles_fixture}/articles/2026-05-01/missing/missing.md"
 printf -- '# No front matter\n\ntitle: Body Title\n' > "${titles_fixture}/articles/2026-05-01/missing/body-title.md"
 printf -- '---\nslug: front-matter-only\n---\n\ntitle: Body Title\n# Heading Title\n' > "${titles_fixture}/articles/2026-05-01/missing/front-matter-without-title.md"
@@ -211,13 +214,13 @@ actual_titles="${titles_fixture}/actual-titles.txt"
 expected_titles="${titles_fixture}/expected-titles.txt"
 HOSONAN_TODAY=2026-05-05 "${repo_root}/extract-article-titles.sh" "${titles_fixture}/articles" > "$actual_titles"
 {
-  printf '%s\t%s\n' "${titles_fixture}/articles/2026-05-05/zebra/index.md" 'Zebra News'
-  printf '%s\t%s\n' "${titles_fixture}/articles/2026-05-04/single/single.md" 'Single Quoted News'
-  printf '%s\t%s\n' "${titles_fixture}/articles/2026-05-03/quoted/quoted.md" 'Quoted News'
-  printf '%s\t%s\n' "${titles_fixture}/articles/2026-04-29/boundary/index.md" 'Boundary News'
+  printf '%s\t%s\t%s\n' "${titles_fixture}/articles/2026-05-05/zebra/index.md" 'Zebra News' 'Zebra summary'
+  printf '%s\t%s\t%s\n' "${titles_fixture}/articles/2026-05-04/single/single.md" 'Single Quoted News' 'Single quoted summary'
+  printf '%s\t%s\t%s\n' "${titles_fixture}/articles/2026-05-03/quoted/quoted.md" 'Quoted News' 'Quoted summary'
+  printf '%s\t%s\t%s\n' "${titles_fixture}/articles/2026-04-29/boundary/index.md" 'Boundary News' ''
 } > "$expected_titles"
 diff -u "$expected_titles" "$actual_titles"
-printf 'ok: article titles are extracted from recent date directories in latest order\n'
+printf 'ok: article metadata is extracted from recent date directories in latest order\n'
 
 fixture="${test_root}/valid"
 create_fixture_repo "$fixture"
@@ -234,6 +237,14 @@ test -d "${fixture}/articles/$(TZ=UTC date +%F)/mock-article-2"
 fixture="${test_root}/invalid-slug"
 create_fixture_repo "$fixture"
 assert_failure "rejects an invalid slug" run_runner "$fixture" env MOCK_SLUG='Invalid Slug'
+
+fixture="${test_root}/missing-summary"
+create_fixture_repo "$fixture"
+assert_failure "rejects a missing summary" run_runner "$fixture" env MOCK_SUMMARY_PRESENT=no
+
+fixture="${test_root}/long-summary"
+create_fixture_repo "$fixture"
+assert_failure "rejects an overlong summary" run_runner "$fixture" env MOCK_SUMMARY="$(printf 's%.0s' {1..201})"
 
 fixture="${test_root}/missing-thumbnail"
 create_fixture_repo "$fixture"

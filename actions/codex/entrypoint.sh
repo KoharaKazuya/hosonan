@@ -35,6 +35,8 @@ date_dir="${article_repo_root}/articles/${run_date}"
 draft_dir="${article_repo_root}/draft"
 draft_index_file="${draft_dir}/index.md"
 draft_thumbnail_file="${draft_dir}/thumbnail.webp"
+article_title_max_chars=200
+article_summary_max_chars=200
 
 current_log_group=""
 
@@ -104,6 +106,30 @@ front_matter_value() {
       exit
     }
   ' "$file"
+}
+
+string_length() {
+  local value="$1"
+
+  awk -v value="$value" 'BEGIN { print length(value) }'
+}
+
+validate_front_matter_text() {
+  local key="$1"
+  local value="$2"
+  local max_chars="$3"
+
+  if [[ -z "$value" ]]; then
+    echo "error: generated article is missing ${key} metadata" >&2
+    exit 1
+  fi
+
+  local length
+  length="$(string_length "$value")"
+  if ((length > max_chars)); then
+    echo "error: generated article ${key} is too long: ${length} chars (max ${max_chars})" >&2
+    exit 1
+  fi
 }
 
 available_output_dir() {
@@ -225,10 +251,11 @@ log_group_end
 log_group_start "Read article metadata"
 log_step "Reading title"
 title="$(front_matter_value "title" "$draft_index_file")"
-if [[ -z "$title" ]]; then
-  echo "error: generated article is missing title metadata" >&2
-  exit 1
-fi
+validate_front_matter_text "title" "$title" "$article_title_max_chars"
+
+log_step "Reading summary"
+summary="$(front_matter_value "summary" "$draft_index_file")"
+validate_front_matter_text "summary" "$summary" "$article_summary_max_chars"
 
 log_step "Reading slug"
 slug="$(front_matter_value "slug" "$draft_index_file")"
