@@ -549,7 +549,7 @@ describe("site worker", () => {
     const cookie = verified.headers.get("set-cookie")?.split(";")[0] ?? "";
 
     const response = await worker.fetch(
-      request("/api/github/setup?installation_id=123", "GET", { headers: { Cookie: cookie } }),
+      request("/settings/github/setup?installation_id=123", "GET", { headers: { Cookie: cookie } }),
       env(new MockR2Bucket(), registry)
     );
 

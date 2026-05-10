@@ -124,7 +124,7 @@ export default {
       return responseForMethod(await settingsPageResponse(request, env), request.method);
     }
 
-    if (requestUrl.pathname === "/api/github/setup") {
+    if (requestUrl.pathname === "/settings/github/setup") {
       return requireMethod(request, ["GET"], () => githubSetupResponse(request, env));
     }
 

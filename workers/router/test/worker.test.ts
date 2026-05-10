@@ -85,6 +85,23 @@ describe("router worker", () => {
     expect(githubWebhook.requests).toHaveLength(0);
   });
 
+  it("delegates the GitHub App setup path to the web worker", async () => {
+    const web = new MockService("web\n");
+    const githubWebhook = new MockService("webhook\n");
+
+    const response = await worker.fetch(
+      request("/settings/github/setup?installation_id=123"),
+      env(web, githubWebhook)
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toBe("web\n");
+    expect(web.requests.map((sentRequest) => new URL(sentRequest.url).pathname)).toEqual([
+      "/settings/github/setup"
+    ]);
+    expect(githubWebhook.requests).toHaveLength(0);
+  });
+
   it("treats the trailing-slash GitHub webhook path as the webhook", async () => {
     const web = new MockService("web\n");
     const githubWebhook = new MockService("webhook\n");
