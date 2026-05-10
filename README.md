@@ -50,7 +50,7 @@
 
 ## 記事生成
 
-`actions/codex` は、Codex CLI を使って最新ニュースを調査し、出典付きの Markdown 記事とサムネイルを 1 回の実行で 1 本生成する記事生成コンポーネントです。
+`actions/codex` は、Codex CLI を使って最新ニュースを調査し、出典付きの Markdown 記事とサムネイルを 1 回の実行で 1-10 本生成する記事生成コンポーネントです。未指定時は 1 本だけ生成します。
 
 使い方、手動実行、テスト方法は [actions/codex/README.md](actions/codex/README.md) を参照してください。
 

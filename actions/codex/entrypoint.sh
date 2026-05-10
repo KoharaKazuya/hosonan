@@ -18,6 +18,22 @@ if [[ -n "${INPUT_TIMEZONE:-}" ]]; then
   export ARTICLE_TIMEZONE="$INPUT_TIMEZONE"
 fi
 
+article_count="${INPUT_ARTICLE_COUNT:-1}"
+if [[ -z "$article_count" ]]; then
+  article_count=1
+fi
+
+if [[ ! "$article_count" =~ ^[0-9]+$ ]]; then
+  echo "error: article-count must be an integer between 1 and 10: ${article_count:-<empty>}" >&2
+  exit 2
+fi
+
+article_count_number=$((10#$article_count))
+if ((article_count_number < 1 || article_count_number > 10)); then
+  echo "error: article-count must be an integer between 1 and 10: ${article_count:-<empty>}" >&2
+  exit 2
+fi
+
 article_repo_root="${ARTICLE_REPO_ROOT:-${GITHUB_WORKSPACE:-$(pwd)}}"
 generator_root="${ARTICLE_GENERATOR_ROOT:-$default_generator_root}"
 prompt_file="${ARTICLE_PROMPT_FILE:-${generator_root}/PROMPT.md}"
@@ -132,6 +148,22 @@ validate_front_matter_text() {
   fi
 }
 
+ensure_empty_draft_dir() {
+  if [[ -e "$draft_dir" ]]; then
+    if [[ ! -d "$draft_dir" ]]; then
+      echo "error: draft exists but is not a directory: $(relative_path "$draft_dir")" >&2
+      exit 1
+    fi
+
+    if [[ -n "$(find "$draft_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+      echo "error: draft directory is not empty: $(relative_path "$draft_dir")" >&2
+      exit 1
+    fi
+  else
+    mkdir -p "$draft_dir"
+  fi
+}
+
 available_output_dir() {
   local path="${date_dir}/$1"
   local index=2
@@ -171,6 +203,77 @@ image_dimensions() {
   return 1
 }
 
+validate_generated_article() {
+  local title_var="$1"
+  local slug_var="$2"
+
+  log_group_start "Validate generated files"
+  log_step "Checking generated article file"
+
+  if [[ ! -f "$draft_index_file" ]]; then
+    echo "error: generated draft is missing index.md" >&2
+    exit 1
+  fi
+
+  log_step "Checking generated thumbnail file"
+
+  if [[ ! -f "$draft_thumbnail_file" ]]; then
+    echo "error: generated draft is missing thumbnail.webp" >&2
+    exit 1
+  fi
+
+  log_step "Checking thumbnail MIME type"
+  local thumbnail_type
+  thumbnail_type="$(file --brief --mime-type "$draft_thumbnail_file")"
+  if [[ "$thumbnail_type" != "image/webp" ]]; then
+    echo "error: generated thumbnail is not WebP: $thumbnail_type" >&2
+    exit 1
+  fi
+
+  log_step "Checking thumbnail dimensions"
+  local thumbnail_dimensions
+  thumbnail_dimensions="$(image_dimensions "$draft_thumbnail_file" || true)"
+  if [[ -z "$thumbnail_dimensions" ]]; then
+    echo "error: could not validate thumbnail dimensions; install sips or ImageMagick" >&2
+    exit 1
+  fi
+
+  local thumbnail_width thumbnail_height
+  read -r thumbnail_width thumbnail_height <<< "$thumbnail_dimensions"
+  if [[ "$thumbnail_width" != "1200" || "$thumbnail_height" != "630" ]]; then
+    echo "error: invalid thumbnail dimensions: ${thumbnail_width:-unknown}x${thumbnail_height:-unknown} (expected 1200x630)" >&2
+    exit 1
+  fi
+  log_group_end
+
+  log_group_start "Read article metadata"
+  log_step "Reading title"
+  local title
+  title="$(front_matter_value "title" "$draft_index_file")"
+  validate_front_matter_text "title" "$title" "$article_title_max_chars"
+
+  log_step "Reading summary"
+  local summary
+  summary="$(front_matter_value "summary" "$draft_index_file")"
+  validate_front_matter_text "summary" "$summary" "$article_summary_max_chars"
+
+  log_step "Reading slug"
+  local slug
+  slug="$(front_matter_value "slug" "$draft_index_file")"
+  if [[ ! "$slug" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+    if [[ -z "$slug" ]]; then
+      echo "error: generated article is missing slug metadata" >&2
+    else
+      echo "error: invalid slug in generated article: $slug" >&2
+    fi
+    exit 1
+  fi
+  log_group_end
+
+  printf -v "$title_var" '%s' "$title"
+  printf -v "$slug_var" '%s' "$slug"
+}
+
 log_group_start "Prepare workspace"
 
 if [[ ! -f "$prompt_file" ]]; then
@@ -183,19 +286,7 @@ if [[ ! -d "${article_repo_root}/config" ]]; then
   exit 1
 fi
 
-if [[ -e "$draft_dir" ]]; then
-  if [[ ! -d "$draft_dir" ]]; then
-    echo "error: draft exists but is not a directory: $(relative_path "$draft_dir")" >&2
-    exit 1
-  fi
-
-  if [[ -n "$(find "$draft_dir" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
-    echo "error: draft directory is not empty: $(relative_path "$draft_dir")" >&2
-    exit 1
-  fi
-else
-  mkdir -p "$draft_dir"
-fi
+ensure_empty_draft_dir
 
 mkdir -p "$date_dir"
 
@@ -204,88 +295,56 @@ log_step "Config directory: config/"
 log_step "Draft directory: $(relative_path "$draft_dir")"
 log_step "Output date directory: $(relative_path "$date_dir")"
 log_step "Timezone: ${TZ:-system default}"
+log_step "Article count: $article_count_number"
 log_step "Web search: live"
 log_step "Codex working directory: $(relative_path "$draft_dir")"
 log_group_end
 
-log_group_start "Run Codex CLI"
-"$codex_bin" --search --dangerously-bypass-approvals-and-sandbox exec --cd "$draft_dir" - < "$prompt_file" >&2
-log_group_end
+titles=()
+output_directories=()
 
-log_group_start "Validate generated files"
-log_step "Checking generated article file"
+for ((article_index = 1; article_index <= article_count_number; article_index++)); do
+  ensure_empty_draft_dir
 
-if [[ ! -f "$draft_index_file" ]]; then
-  echo "error: generated draft is missing index.md" >&2
-  exit 1
-fi
+  log_group_start "Run Codex CLI (${article_index}/${article_count_number})"
+  "$codex_bin" --search --dangerously-bypass-approvals-and-sandbox exec --cd "$draft_dir" - < "$prompt_file" >&2
+  log_group_end
 
-log_step "Checking generated thumbnail file"
+  article_title=""
+  article_slug=""
+  validate_generated_article article_title article_slug
 
-if [[ ! -f "$draft_thumbnail_file" ]]; then
-  echo "error: generated draft is missing thumbnail.webp" >&2
-  exit 1
-fi
+  log_group_start "Move article to output directory"
+  output_dir="$(available_output_dir "$article_slug")"
+  log_step "Moving draft to $(relative_path "$output_dir")"
+  mv "$draft_dir" "$output_dir"
+  output_directory="$(relative_path "$output_dir")"
+  log_group_end
 
-log_step "Checking thumbnail MIME type"
-thumbnail_type="$(file --brief --mime-type "$draft_thumbnail_file")"
-if [[ "$thumbnail_type" != "image/webp" ]]; then
-  echo "error: generated thumbnail is not WebP: $thumbnail_type" >&2
-  exit 1
-fi
-
-log_step "Checking thumbnail dimensions"
-thumbnail_dimensions="$(image_dimensions "$draft_thumbnail_file" || true)"
-if [[ -z "$thumbnail_dimensions" ]]; then
-  echo "error: could not validate thumbnail dimensions; install sips or ImageMagick" >&2
-  exit 1
-fi
-
-read -r thumbnail_width thumbnail_height <<< "$thumbnail_dimensions"
-if [[ "$thumbnail_width" != "1200" || "$thumbnail_height" != "630" ]]; then
-  echo "error: invalid thumbnail dimensions: ${thumbnail_width:-unknown}x${thumbnail_height:-unknown} (expected 1200x630)" >&2
-  exit 1
-fi
-log_group_end
-
-log_group_start "Read article metadata"
-log_step "Reading title"
-title="$(front_matter_value "title" "$draft_index_file")"
-validate_front_matter_text "title" "$title" "$article_title_max_chars"
-
-log_step "Reading summary"
-summary="$(front_matter_value "summary" "$draft_index_file")"
-validate_front_matter_text "summary" "$summary" "$article_summary_max_chars"
-
-log_step "Reading slug"
-slug="$(front_matter_value "slug" "$draft_index_file")"
-if [[ ! "$slug" =~ ^[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
-  if [[ -z "$slug" ]]; then
-    echo "error: generated article is missing slug metadata" >&2
-  else
-    echo "error: invalid slug in generated article: $slug" >&2
-  fi
-  exit 1
-fi
-log_group_end
-
-log_group_start "Move article to output directory"
-output_dir="$(available_output_dir "$slug")"
-log_step "Moving draft to $(relative_path "$output_dir")"
-mv "$draft_dir" "$output_dir"
-output_directory="$(relative_path "$output_dir")"
-log_group_end
+  titles+=("$article_title")
+  output_directories+=("$output_directory")
+done
 
 log_group_start "Result"
 
 if [[ -n "${GITHUB_OUTPUT:-}" ]]; then
   {
-    printf 'title=%s\n' "$title"
-    printf 'directory=%s\n' "$output_directory"
+    printf 'title=%s\n' "${titles[0]}"
+    printf 'directory=%s\n' "${output_directories[0]}"
+    printf 'titles<<__HOSONAN_TITLES__\n'
+    printf '%s\n' "${titles[@]}"
+    printf '__HOSONAN_TITLES__\n'
+    printf 'directories<<__HOSONAN_DIRECTORIES__\n'
+    printf '%s\n' "${output_directories[@]}"
+    printf '__HOSONAN_DIRECTORIES__\n'
   } >> "$GITHUB_OUTPUT"
 fi
 
-printf 'title: %s\n' "$title"
-printf 'directory: %s\n' "$output_directory"
+printf 'title: %s\n' "${titles[0]}"
+printf 'directory: %s\n' "${output_directories[0]}"
+printf 'titles:\n'
+printf -- '- %s\n' "${titles[@]}"
+printf 'directories:\n'
+printf -- '- %s\n' "${output_directories[@]}"
 
 log_group_end

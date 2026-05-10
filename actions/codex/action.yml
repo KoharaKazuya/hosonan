@@ -6,6 +6,10 @@ inputs:
     description: Timezone used for article date directories and metadata guidance.
     required: false
     default: Asia/Tokyo
+  article-count:
+    description: 1 回の実行で生成する記事数。1-10 の整数。
+    required: false
+    default: "1"
   openai-api-key:
     description: OpenAI API key used by Codex CLI in GitHub Actions.
     required: true

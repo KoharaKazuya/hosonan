@@ -1,6 +1,6 @@
 # actions/codex
 
-`actions/codex` は、Codex CLI を使って最新ニュースを調査し、出典付きの Markdown 記事とサムネイルを 1 回の実行で 1 本生成する GitHub Action です。
+`actions/codex` は、Codex CLI を使って最新ニュースを調査し、出典付きの Markdown 記事とサムネイルを 1 回の実行で 1-10 本生成する GitHub Action です。記事数を指定しない場合は 1 本だけ生成します。
 
 生成された記事は、利用側リポジトリの `articles/YYYY-MM-DD/<topic-slug>/` 以下に保存されます。この Action は記事ファイルの生成と検証までを担当し、生成後の commit / push は利用側 workflow の後続 step に委ねます。
 
@@ -27,6 +27,7 @@ jobs:
       - uses: KoharaKazuya/hosonan/actions/codex@v1
         with:
           timezone: Asia/Tokyo
+          article-count: "1"
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
       - name: Commit generated article
         run: |
@@ -47,6 +48,8 @@ jobs:
 ```
 
 利用側リポジトリには `OPENAI_API_KEY` secret を設定してください。Action 内では必須の `openai-api-key` input として受け取り、`OPENAI_API_KEY` として Codex CLI に渡します。
+
+`article-count` input には 1 回の Action 実行で生成する記事数を `1` から `10` の整数で指定できます。省略時は `1` です。複数本を指定した場合も Codex CLI には 1 回につき 1 本だけ生成させ、生成と検証と保存を記事数分繰り返します。2 本目以降の Codex 実行時には、それ以前のループで保存済みの記事も既存記事として参照されるため、重複回避の対象になります。
 
 利用側がこの Action を指定する箇所は `uses: KoharaKazuya/hosonan/actions/codex@v1` です。GitHub Actions は `actions/codex/Dockerfile` を build し、`node:24-bookworm-slim` ベースの container 内で Codex CLI と entrypoint を実行します。
 
@@ -84,6 +87,7 @@ $ /opt/hosonan/entrypoint.sh
 
 `entrypoint.sh` は次の処理を 1 回のコマンドで行います。
 
+- `article-count` input が 1-10 の整数であることの検証
 - 空の `draft/` ディレクトリの作成
 - `PROMPT.md` の Codex CLI への標準入力渡し
 - Codex CLI の作業ディレクトリを `draft/` に指定
@@ -93,7 +97,11 @@ $ /opt/hosonan/entrypoint.sh
 - `index.md` の front matter から `title`、`summary`、`slug` を検証
 - `articles/YYYY-MM-DD/<topic-slug>/` への生成物配置
 
-出力先は `articles/YYYY-MM-DD/<topic-slug>/index.md` と `articles/YYYY-MM-DD/<topic-slug>/thumbnail.webp` です。同名ディレクトリがすでにある場合は、既存ディレクトリを上書きせず、末尾に連番を付けます。生成開始時に `draft/` が空でない場合、スクリプトは既存内容を上書きせずに停止します。
+`article-count` が 2 以上の場合は、空の `draft/` 確認から生成物配置までを指定回数繰り返します。
+
+出力先は `articles/YYYY-MM-DD/<topic-slug>/index.md` と `articles/YYYY-MM-DD/<topic-slug>/thumbnail.webp` です。同名ディレクトリがすでにある場合は、既存ディレクトリを上書きせず、末尾に連番を付けます。各記事の生成開始時に `draft/` が空でない場合、スクリプトは既存内容を上書きせずに停止します。
+
+Action output には、既存の workflow から参照しやすいように 1 本目の `title` と `directory` を出力します。複数本の結果は、改行区切りの `titles` と `directories` output でも取得できます。
 
 日付ディレクトリは Action の `timezone` input で決まります。
 
@@ -124,4 +132,4 @@ entrypoint は mock Codex で検証できます。
 $ actions/codex/tests/run-generate-article.sh
 ```
 
-このテストは、Docker action 定義、Dockerfile の主要設定、workflow テンプレート、正常生成、slug 衝突時の連番、slug 不正、サムネイル不足、MIME 不一致、サイズ不一致、Codex CLI への認証委譲と非 commit 動作を確認します。
+このテストは、Docker action 定義、Dockerfile の主要設定、workflow テンプレート、正常生成、複数記事生成、slug 衝突時の連番、`article-count` 不正値、slug 不正、サムネイル不足、MIME 不一致、サイズ不一致、Codex CLI への認証委譲と非 commit 動作を確認します。

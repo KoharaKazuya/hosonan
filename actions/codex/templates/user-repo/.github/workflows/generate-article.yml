@@ -16,6 +16,7 @@ jobs:
       - uses: KoharaKazuya/hosonan/actions/codex@v1
         with:
           timezone: Asia/Tokyo
+          article-count: "1"
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
       - name: Commit generated article
         run: |

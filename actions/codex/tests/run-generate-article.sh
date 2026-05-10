@@ -55,15 +55,38 @@ fi
 
 mkdir -p "$cd_dir"
 
-if [[ "${MOCK_INDEX:-yes}" == "yes" ]]; then
+repo_dir="$(cd "${cd_dir}/.." && pwd)"
+count_file="${repo_dir}/.mock-codex-count"
+call_count=1
+if [[ -f "$count_file" ]]; then
+  call_count="$(($(cat "$count_file") + 1))"
+fi
+printf '%s\n' "$call_count" > "$count_file"
+
+value_for_call() {
+  local base_name="$1"
+  local default_value="$2"
+  local call_name="${base_name}_${call_count}"
+  printf '%s' "${!call_name:-${!base_name:-$default_value}}"
+}
+
+mock_index="$(value_for_call MOCK_INDEX yes)"
+mock_title="$(value_for_call MOCK_TITLE "Mock Article")"
+mock_summary_present="$(value_for_call MOCK_SUMMARY_PRESENT yes)"
+mock_summary="$(value_for_call MOCK_SUMMARY "Mock article summary")"
+mock_slug_present="$(value_for_call MOCK_SLUG_PRESENT yes)"
+mock_slug="$(value_for_call MOCK_SLUG mock-article)"
+mock_thumbnail="$(value_for_call MOCK_THUMBNAIL valid)"
+
+if [[ "$mock_index" == "yes" ]]; then
   {
     printf -- '---\n'
-    printf 'title: %s\n' "${MOCK_TITLE:-Mock Article}"
-    if [[ "${MOCK_SUMMARY_PRESENT:-yes}" == "yes" ]]; then
-      printf 'summary: %s\n' "${MOCK_SUMMARY:-Mock article summary}"
+    printf 'title: %s\n' "$mock_title"
+    if [[ "$mock_summary_present" == "yes" ]]; then
+      printf 'summary: %s\n' "$mock_summary"
     fi
-    if [[ "${MOCK_SLUG_PRESENT:-yes}" == "yes" ]]; then
-      printf 'slug: %s\n' "${MOCK_SLUG:-mock-article}"
+    if [[ "$mock_slug_present" == "yes" ]]; then
+      printf 'slug: %s\n' "$mock_slug"
     fi
     printf 'createdAt: 2026-05-01T00:00:00+09:00\n'
     printf 'updatedAt: 2026-05-01T00:00:00+09:00\n'
@@ -71,7 +94,7 @@ if [[ "${MOCK_INDEX:-yes}" == "yes" ]]; then
   } > "${cd_dir}/index.md"
 fi
 
-case "${MOCK_THUMBNAIL:-valid}" in
+case "$mock_thumbnail" in
   valid)
     "${MAKE_WEBP}" "${cd_dir}/thumbnail.webp" 1200 630
     ;;
@@ -187,7 +210,9 @@ grep -q '^COPY extract-article-titles\.sh /opt/hosonan/extract-article-titles\.s
 grep -q '^RUN chmod +x /opt/hosonan/extract-article-titles\.sh$' "${repo_root}/Dockerfile"
 grep -q '^ENTRYPOINT \["/opt/hosonan/entrypoint\.sh"\]$' "${repo_root}/Dockerfile"
 grep -q 'uses: KoharaKazuya/hosonan/actions/codex@v1' "${repo_root}/templates/user-repo/.github/workflows/generate-article.yml"
+grep -q 'article-count: "1"' "${repo_root}/templates/user-repo/.github/workflows/generate-article.yml"
 grep -q 'Commit generated article' "${repo_root}/templates/user-repo/.github/workflows/generate-article.yml"
+grep -q 'article-count:' "${repo_root}/action.yml"
 printf 'ok: Docker action interface and image definition are configured\n'
 
 titles_fixture="${test_root}/titles"
@@ -227,12 +252,57 @@ create_fixture_repo "$fixture"
 assert_success "moves a valid draft into the dated slug directory" run_runner "$fixture" env
 test -f "${fixture}/articles/$(TZ=UTC date +%F)/mock-article/index.md"
 test -f "${fixture}/articles/$(TZ=UTC date +%F)/mock-article/thumbnail.webp"
+test "$(cat "${fixture}/.mock-codex-count")" = "1"
+
+fixture="${test_root}/default-count"
+create_fixture_repo "$fixture"
+assert_success "generates one article when article-count is unset" run_runner "$fixture" env
+test "$(find "${fixture}/articles/$(TZ=UTC date +%F)" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = "1"
+test "$(cat "${fixture}/.mock-codex-count")" = "1"
+
+fixture="${test_root}/empty-count"
+create_fixture_repo "$fixture"
+assert_success "treats an empty article-count as one article" run_runner "$fixture" env INPUT_ARTICLE_COUNT=
+test "$(cat "${fixture}/.mock-codex-count")" = "1"
+
+fixture="${test_root}/multiple"
+create_fixture_repo "$fixture"
+assert_success "generates three articles when article-count is 3" run_runner "$fixture" env INPUT_ARTICLE_COUNT=3 MOCK_SLUG=multi-article
+test -f "${fixture}/articles/$(TZ=UTC date +%F)/multi-article/index.md"
+test -f "${fixture}/articles/$(TZ=UTC date +%F)/multi-article-2/index.md"
+test -f "${fixture}/articles/$(TZ=UTC date +%F)/multi-article-3/index.md"
+test "$(cat "${fixture}/.mock-codex-count")" = "3"
+
+fixture="${test_root}/outputs"
+create_fixture_repo "$fixture"
+github_output="${fixture}/github-output.txt"
+assert_success "writes single and multi-value GitHub outputs" run_runner "$fixture" env GITHUB_OUTPUT="$github_output" INPUT_ARTICLE_COUNT=2 MOCK_SLUG=output-article MOCK_TITLE_1="First Article" MOCK_TITLE_2="Second Article"
+grep -q '^title=First Article$' "$github_output"
+grep -q "^directory=articles/$(TZ=UTC date +%F)/output-article$" "$github_output"
+grep -q '^titles<<__HOSONAN_TITLES__$' "$github_output"
+grep -q '^First Article$' "$github_output"
+grep -q '^Second Article$' "$github_output"
+grep -q '^directories<<__HOSONAN_DIRECTORIES__$' "$github_output"
+grep -q "^articles/$(TZ=UTC date +%F)/output-article-2$" "$github_output"
 
 fixture="${test_root}/duplicate"
 create_fixture_repo "$fixture"
 mkdir -p "${fixture}/articles/$(TZ=UTC date +%F)/mock-article"
 assert_success "adds a numeric suffix when the slug directory exists" run_runner "$fixture" env
 test -d "${fixture}/articles/$(TZ=UTC date +%F)/mock-article-2"
+
+fixture="${test_root}/second-invalid"
+create_fixture_repo "$fixture"
+assert_failure "fails when a later generated article is invalid" run_runner "$fixture" env INPUT_ARTICLE_COUNT=2 MOCK_SLUG_1=first-article MOCK_SLUG_2='Invalid Slug'
+test -f "${fixture}/articles/$(TZ=UTC date +%F)/first-article/index.md"
+test "$(cat "${fixture}/.mock-codex-count")" = "2"
+
+for invalid_count in 0 11 1.5 abc " 1" "1 " "1 2"; do
+  fixture="${test_root}/invalid-count-${invalid_count//[^a-zA-Z0-9]/_}"
+  create_fixture_repo "$fixture"
+  assert_failure "rejects invalid article-count: ${invalid_count}" run_runner "$fixture" env INPUT_ARTICLE_COUNT="$invalid_count"
+  test ! -e "${fixture}/.mock-codex-count"
+done
 
 fixture="${test_root}/invalid-slug"
 create_fixture_repo "$fixture"
