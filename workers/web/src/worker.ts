@@ -3,6 +3,8 @@ import {
   escapeHtml,
   parseServedArticlePath,
   validateChannelIconPath,
+  type RepoSyncDesiredState,
+  type RepoSyncNotification,
   type ServedArticlePath,
   type StoredArticle
 } from "@hosonan/shared";
@@ -328,9 +330,11 @@ type SettingsAuthState = {
 
 type SettingsRepository = {
   repository_id: number;
+  installation_id: number;
   owner_login: string;
   repo_name: string;
   full_name: string;
+  default_branch: string;
   status: string;
   sync_enabled: number;
 };
@@ -895,7 +899,7 @@ async function settingsAuthState(env: Env, userId: string): Promise<SettingsAuth
 
 async function settingsRepositories(env: Env, userId: string): Promise<SettingsRepository[]> {
   const result = await env.GITHUB_REGISTRY.prepare(
-    `SELECT r.repository_id, r.owner_login, r.repo_name, r.full_name, r.status, r.sync_enabled
+    `SELECT r.repository_id, r.installation_id, r.owner_login, r.repo_name, r.full_name, r.default_branch, r.status, r.sync_enabled
      FROM github_installation_users u
      JOIN repositories r ON r.installation_id = u.installation_id
      WHERE u.user_id = ? AND r.status != 'deleted'
@@ -923,16 +927,54 @@ async function settingsSaveResponse(request: Request, env: Env): Promise<Respons
   const timestamp = nowIso();
 
   for (const repository of repositories) {
+    const previousEnabled = repository.sync_enabled;
     const nextEnabled = enabledIds.has(repository.repository_id) ? 1 : 0;
-    if (nextEnabled === repository.sync_enabled) {
+    if (nextEnabled === previousEnabled) {
       continue;
+    }
+    if (previousEnabled === 0 && nextEnabled === 1 && repository.status === "active") {
+      await notifySettingsRepository(env, repository, "active");
     }
     await env.GITHUB_REGISTRY.prepare("UPDATE repositories SET sync_enabled = ?, updated_at = ? WHERE repository_id = ?")
       .bind(nextEnabled, timestamp, repository.repository_id)
       .run();
+    if (previousEnabled === 1 && nextEnabled === 0) {
+      await notifySettingsRepository(env, repository, "inactive");
+    }
   }
 
   return Response.redirect(`${originFromRequest(request)}/settings`, 303);
+}
+
+async function notifySettingsRepository(
+  env: Env,
+  repository: SettingsRepository,
+  desiredState: RepoSyncDesiredState
+): Promise<void> {
+  await postJson(repoSyncStateObject(env, repository.repository_id), "/notify", {
+    repositoryId: repository.repository_id,
+    ownerLogin: repository.owner_login,
+    repoName: repository.repo_name,
+    installationId: repository.installation_id,
+    targetBranch: repository.default_branch,
+    desiredState
+  } satisfies RepoSyncNotification);
+}
+
+function repoSyncStateObject(env: Env, repositoryId: number): DurableObjectStub {
+  return env.REPO_SYNC_STATE.get(env.REPO_SYNC_STATE.idFromName(String(repositoryId)));
+}
+
+async function postJson<T>(stub: DurableObjectStub, path: string, body: unknown): Promise<T> {
+  const response = await stub.fetch(`https://repo-sync-state.local${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) {
+    throw new Error(`Repo sync state request failed: ${response.status}`);
+  }
+  return response.json();
 }
 
 async function createChallenge(

@@ -34,6 +34,7 @@ import {
   verifyAuthenticationResponse,
   verifyRegistrationResponse
 } from "@simplewebauthn/server";
+import type { RepoSyncNotification } from "@hosonan/shared";
 
 class MockR2Bucket {
   gets: string[] = [];
@@ -64,6 +65,31 @@ class MockCache {
 
   async put(request: Request, response: Response): Promise<void> {
     this.responses.set(request.url, response.clone());
+  }
+}
+
+class MockRepoSyncStub {
+  notifications: RepoSyncNotification[] = [];
+
+  async fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+    const path = new URL(String(input)).pathname;
+    if (path === "/notify") {
+      this.notifications.push(JSON.parse(String(init?.body)) as RepoSyncNotification);
+      return Response.json({ ok: true });
+    }
+    return new Response("not found", { status: 404 });
+  }
+}
+
+class MockDurableObjectNamespace {
+  constructor(readonly stub = new MockRepoSyncStub()) {}
+
+  idFromName(name: string): DurableObjectId {
+    return { name } as unknown as DurableObjectId;
+  }
+
+  get(_id: DurableObjectId): DurableObjectStub {
+    return this.stub as unknown as DurableObjectStub;
   }
 }
 
@@ -311,10 +337,15 @@ class MockD1Database {
   }
 }
 
-function env(bucket: { get(key: string): Promise<R2ObjectBody | null> }, registry = new MockD1Database()): Env {
+function env(
+  bucket: { get(key: string): Promise<R2ObjectBody | null> },
+  registry = new MockD1Database(),
+  namespace = new MockDurableObjectNamespace()
+): Env {
   return {
     ARTICLES_BUCKET: bucket as unknown as R2Bucket,
     GITHUB_REGISTRY: registry as unknown as D1Database,
+    REPO_SYNC_STATE: namespace as unknown as DurableObjectNamespace,
     GITHUB_CLIENT_ID: "client-id",
     GITHUB_CLIENT_SECRET: "client-secret"
   } as unknown as Env;
@@ -502,6 +533,7 @@ describe("site worker", () => {
         full_name: "octo/articles",
         owner_login: "octo",
         repo_name: "articles",
+        default_branch: "main",
         status: "active",
         sync_enabled: 0
       },
@@ -511,6 +543,7 @@ describe("site worker", () => {
         full_name: "octo/notes",
         owner_login: "octo",
         repo_name: "notes",
+        default_branch: "trunk",
         status: "active",
         sync_enabled: 1
       }
@@ -521,17 +554,129 @@ describe("site worker", () => {
     expect(html).toContain("octo/articles");
     expect(html).toContain('value="42"');
 
+    const namespace = new MockDurableObjectNamespace();
     const response = await worker.fetch(
       request("/settings", "POST", {
         headers: { Cookie: cookie, "Content-Type": "application/x-www-form-urlencoded" },
         body: new URLSearchParams({ sync_repository_id: "42" })
       }),
-      env(new MockR2Bucket(), registry)
+      env(new MockR2Bucket(), registry, namespace)
     );
 
     expect(response.status).toBe(303);
     expect(registry.repositories.find((repository) => repository.repository_id === 42)?.sync_enabled).toBe(1);
     expect(registry.repositories.find((repository) => repository.repository_id === 43)?.sync_enabled).toBe(0);
+    expect(namespace.stub.notifications).toEqual([
+      {
+        repositoryId: 42,
+        ownerLogin: "octo",
+        repoName: "articles",
+        installationId: 123,
+        targetBranch: "main",
+        desiredState: "active"
+      },
+      {
+        repositoryId: 43,
+        ownerLogin: "octo",
+        repoName: "notes",
+        installationId: 123,
+        targetBranch: "trunk",
+        desiredState: "inactive"
+      }
+    ]);
+  });
+
+  it("does not notify repo sync state when settings selections do not change", async () => {
+    const registry = new MockD1Database();
+    await worker.fetch(
+      request("/api/auth/passkey/register/options", "POST", { body: JSON.stringify({}) }),
+      env(new MockR2Bucket(), registry)
+    );
+    const verified = await worker.fetch(
+      request("/api/auth/passkey/register/verify", "POST", {
+        body: JSON.stringify({ response: registrationResponse("credential-id") })
+      }),
+      env(new MockR2Bucket(), registry)
+    );
+    const cookie = verified.headers.get("set-cookie")?.split(";")[0] ?? "";
+    const userId = String(registry.users[0].user_id);
+    registry.installationUsers.push({ installation_id: 123, user_id: userId });
+    registry.repositories.push({
+      repository_id: 42,
+      installation_id: 123,
+      full_name: "octo/articles",
+      owner_login: "octo",
+      repo_name: "articles",
+      default_branch: "main",
+      status: "active",
+      sync_enabled: 1
+    });
+    const namespace = new MockDurableObjectNamespace();
+
+    const response = await worker.fetch(
+      request("/settings", "POST", {
+        headers: { Cookie: cookie, "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ sync_repository_id: "42" })
+      }),
+      env(new MockR2Bucket(), registry, namespace)
+    );
+
+    expect(response.status).toBe(303);
+    expect(registry.repositories.find((repository) => repository.repository_id === 42)?.sync_enabled).toBe(1);
+    expect(namespace.stub.notifications).toEqual([]);
+  });
+
+  it("ignores repository ids that are not linked to the current user when saving settings", async () => {
+    const registry = new MockD1Database();
+    await worker.fetch(
+      request("/api/auth/passkey/register/options", "POST", { body: JSON.stringify({}) }),
+      env(new MockR2Bucket(), registry)
+    );
+    const verified = await worker.fetch(
+      request("/api/auth/passkey/register/verify", "POST", {
+        body: JSON.stringify({ response: registrationResponse("credential-id") })
+      }),
+      env(new MockR2Bucket(), registry)
+    );
+    const cookie = verified.headers.get("set-cookie")?.split(";")[0] ?? "";
+    const userId = String(registry.users[0].user_id);
+    registry.installationUsers.push({ installation_id: 123, user_id: userId });
+    registry.repositories.push(
+      {
+        repository_id: 42,
+        installation_id: 123,
+        full_name: "octo/articles",
+        owner_login: "octo",
+        repo_name: "articles",
+        default_branch: "main",
+        status: "active",
+        sync_enabled: 0
+      },
+      {
+        repository_id: 99,
+        installation_id: 999,
+        full_name: "other/private",
+        owner_login: "other",
+        repo_name: "private",
+        default_branch: "main",
+        status: "active",
+        sync_enabled: 0
+      }
+    );
+    const namespace = new MockDurableObjectNamespace();
+
+    const response = await worker.fetch(
+      request("/settings", "POST", {
+        headers: { Cookie: cookie, "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ sync_repository_id: "99" })
+      }),
+      env(new MockR2Bucket(), registry, namespace)
+    );
+
+    expect(response.status).toBe(303);
+    expect(registry.repositories.find((repository) => repository.repository_id === 42)?.sync_enabled).toBe(0);
+    expect(registry.repositories.find((repository) => repository.repository_id === 99)?.sync_enabled).toBe(0);
+    expect(namespace.stub.notifications).toEqual([]);
   });
 
   it("links GitHub App setup installation ids to the current user", async () => {

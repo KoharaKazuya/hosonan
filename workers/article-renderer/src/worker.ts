@@ -195,9 +195,20 @@ async function syncActiveRepository(
   env: Env,
   stub: DurableObjectStub
 ): Promise<RepoSyncCompleteResult> {
+  if (!(await isRepositoryCurrentlyActive(env, claim.repositoryId))) {
+    return syncInactiveRepository(claim, env, stub);
+  }
+
   const token = await createInstallationAccessToken(env, claim.installationId, claim.repositoryId);
   const targetCommit = claim.targetCommit ?? (await fetchDefaultBranchHead(claim.ownerLogin, claim.repoName, claim.targetBranch, token));
   return syncClaimedRepository({ ...claim, targetCommit }, token, env, stub);
+}
+
+async function isRepositoryCurrentlyActive(env: Env, repositoryId: number): Promise<boolean> {
+  const repository = await env.GITHUB_REGISTRY.prepare("SELECT status, sync_enabled FROM repositories WHERE repository_id = ?")
+    .bind(repositoryId)
+    .first<{ status: string; sync_enabled: number }>();
+  return repository?.status === "active" && repository.sync_enabled === 1;
 }
 
 async function syncInactiveRepository(

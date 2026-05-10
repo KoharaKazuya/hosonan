@@ -116,11 +116,17 @@ class MockD1PreparedStatement {
   async run(): Promise<D1Result> {
     return this.db.run(this.query, this.values);
   }
+
+  async first<T = Record<string, unknown>>(): Promise<T | null> {
+    return this.db.first(this.query, this.values) as T | null;
+  }
 }
 
 class MockD1Database {
   articles = new Map<string, Record<string, unknown>>();
-  repositories = new Map<number, Record<string, unknown>>([[42, { repository_id: 42 }]]);
+  repositories = new Map<number, Record<string, unknown>>([
+    [42, { repository_id: 42, status: "active", sync_enabled: 1 }]
+  ]);
 
   prepare(query: string): MockD1PreparedStatement {
     return new MockD1PreparedStatement(this, query);
@@ -169,6 +175,14 @@ class MockD1Database {
       meta: { duration: 0, size_after: 0, rows_read: 0, rows_written: 1, last_row_id: 0, changed_db: true, changes: 1 },
       results: []
     };
+  }
+
+  first(query: string, values: unknown[]): Record<string, unknown> | null {
+    if (query.includes("SELECT status, sync_enabled FROM repositories WHERE repository_id = ?")) {
+      const repository = this.repositories.get(Number(values[0]));
+      return repository ? { status: "active", sync_enabled: 1, ...repository } : null;
+    }
+    return null;
   }
 }
 
@@ -555,6 +569,55 @@ describe("article renderer", () => {
       ]
     });
     expect(registry.articles.get("42:articles/2026-05-01/old/index.md")?.status).toBe("active");
+  });
+
+  it("treats an active claim as inactive when the repository is disabled in D1", async () => {
+    const bucket = new MockR2Bucket();
+    const registry = new MockD1Database();
+    const stub = new MockRepoSyncStub();
+    stub.claim.lastArticleIndex = [
+      {
+        date: "2026-05-01",
+        slug: "old",
+        path: "articles/2026-05-01/old/index.md",
+        r2Key: "gh/octo/articles/2026-05-01/old/index.html"
+      }
+    ];
+    registry.repositories.set(42, { repository_id: 42, status: "active", sync_enabled: 0 });
+
+    await syncRepositoryMessage(message(), env(bucket, new MockDurableObjectNamespace(stub), new MockQueue(), registry));
+
+    expect(github.createInstallationAccessToken).not.toHaveBeenCalled();
+    expect(github.fetchDefaultBranchHead).not.toHaveBeenCalled();
+    expect(github.compareCommits).not.toHaveBeenCalled();
+    expect(bucket.puts).toEqual([]);
+    expect(stub.completed?.result).toEqual({
+      syncedCommit: "old",
+      articleIndex: [
+        {
+          date: "2026-05-01",
+          slug: "old",
+          path: "articles/2026-05-01/old/index.md",
+          r2Key: "gh/octo/articles/2026-05-01/old/index.html"
+        }
+      ]
+    });
+  });
+
+  it("treats an active claim as inactive when the repository is no longer active in D1", async () => {
+    const registry = new MockD1Database();
+    const stub = new MockRepoSyncStub();
+    registry.repositories.set(42, { repository_id: 42, status: "inactive", sync_enabled: 1 });
+
+    await syncRepositoryMessage(message(), env(new MockR2Bucket(), new MockDurableObjectNamespace(stub), new MockQueue(), registry));
+
+    expect(github.createInstallationAccessToken).not.toHaveBeenCalled();
+    expect(github.fetchDefaultBranchHead).not.toHaveBeenCalled();
+    expect(github.compareCommits).not.toHaveBeenCalled();
+    expect(stub.completed?.result).toEqual({
+      syncedCommit: "old",
+      articleIndex: []
+    });
   });
 
   it("reports failures to the repo sync state without completing the commit", async () => {
