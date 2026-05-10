@@ -10,16 +10,17 @@ fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 default_generator_root="$script_dir"
 
-if [[ -n "${INPUT_OPENAI_API_KEY:-}" ]]; then
-  export OPENAI_API_KEY="$INPUT_OPENAI_API_KEY"
-  export CODEX_API_KEY="$INPUT_OPENAI_API_KEY"
+openai_api_key="$(printenv 'INPUT_OPENAI-API-KEY' || true)"
+if [[ -n "$openai_api_key" ]]; then
+  export OPENAI_API_KEY="$openai_api_key"
+  export CODEX_API_KEY="$openai_api_key"
 fi
 
 if [[ -n "${INPUT_TIMEZONE:-}" ]]; then
   export ARTICLE_TIMEZONE="$INPUT_TIMEZONE"
 fi
 
-article_count="${INPUT_ARTICLE_COUNT:-1}"
+article_count="$(printenv 'INPUT_ARTICLE-COUNT' || true)"
 if [[ -z "$article_count" ]]; then
   article_count=1
 fi

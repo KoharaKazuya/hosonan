@@ -267,12 +267,12 @@ test "$(cat "${fixture}/.mock-codex-count")" = "1"
 
 fixture="${test_root}/empty-count"
 create_fixture_repo "$fixture"
-assert_success "treats an empty article-count as one article" run_runner "$fixture" env INPUT_ARTICLE_COUNT=
+assert_success "treats an empty article-count as one article" run_runner "$fixture" env 'INPUT_ARTICLE-COUNT='
 test "$(cat "${fixture}/.mock-codex-count")" = "1"
 
 fixture="${test_root}/multiple"
 create_fixture_repo "$fixture"
-assert_success "generates three articles when article-count is 3" run_runner "$fixture" env INPUT_ARTICLE_COUNT=3 MOCK_SLUG=multi-article
+assert_success "generates three articles when article-count is 3" run_runner "$fixture" env 'INPUT_ARTICLE-COUNT=3' MOCK_SLUG=multi-article
 test -f "${fixture}/articles/$(TZ=UTC date +%F)/multi-article/index.md"
 test -f "${fixture}/articles/$(TZ=UTC date +%F)/multi-article-2/index.md"
 test -f "${fixture}/articles/$(TZ=UTC date +%F)/multi-article-3/index.md"
@@ -281,7 +281,7 @@ test "$(cat "${fixture}/.mock-codex-count")" = "3"
 fixture="${test_root}/outputs"
 create_fixture_repo "$fixture"
 github_output="${fixture}/github-output.txt"
-assert_success "writes single and multi-value GitHub outputs" run_runner "$fixture" env GITHUB_OUTPUT="$github_output" INPUT_ARTICLE_COUNT=2 MOCK_SLUG=output-article MOCK_TITLE_1="First Article" MOCK_TITLE_2="Second Article"
+assert_success "writes single and multi-value GitHub outputs" run_runner "$fixture" env GITHUB_OUTPUT="$github_output" 'INPUT_ARTICLE-COUNT=2' MOCK_SLUG=output-article MOCK_TITLE_1="First Article" MOCK_TITLE_2="Second Article"
 grep -q '^title=First Article$' "$github_output"
 grep -q "^directory=articles/$(TZ=UTC date +%F)/output-article$" "$github_output"
 grep -q '^titles<<__HOSONAN_TITLES__$' "$github_output"
@@ -298,14 +298,14 @@ test -d "${fixture}/articles/$(TZ=UTC date +%F)/mock-article-2"
 
 fixture="${test_root}/second-invalid"
 create_fixture_repo "$fixture"
-assert_failure "fails when a later generated article is invalid" run_runner "$fixture" env INPUT_ARTICLE_COUNT=2 MOCK_SLUG_1=first-article MOCK_SLUG_2='Invalid Slug'
+assert_failure "fails when a later generated article is invalid" run_runner "$fixture" env 'INPUT_ARTICLE-COUNT=2' MOCK_SLUG_1=first-article MOCK_SLUG_2='Invalid Slug'
 test -f "${fixture}/articles/$(TZ=UTC date +%F)/first-article/index.md"
 test "$(cat "${fixture}/.mock-codex-count")" = "2"
 
 for invalid_count in 0 11 1.5 abc " 1" "1 " "1 2"; do
   fixture="${test_root}/invalid-count-${invalid_count//[^a-zA-Z0-9]/_}"
   create_fixture_repo "$fixture"
-  assert_failure "rejects invalid article-count: ${invalid_count}" run_runner "$fixture" env INPUT_ARTICLE_COUNT="$invalid_count"
+  assert_failure "rejects invalid article-count: ${invalid_count}" run_runner "$fixture" env "INPUT_ARTICLE-COUNT=$invalid_count"
   test ! -e "${fixture}/.mock-codex-count"
 done
 
@@ -348,4 +348,4 @@ test -n "$(git -C "$fixture" status --porcelain -- articles)"
 
 fixture="${test_root}/entrypoint-with-input-key"
 create_git_fixture_repo "$fixture"
-assert_success "action entrypoint propagates the API key input for codex exec" run_action_entrypoint "$fixture" env INPUT_OPENAI_API_KEY=test-key MOCK_EXPECT_CODEX_API_KEY=test-key
+assert_success "action entrypoint propagates the API key input for codex exec" run_action_entrypoint "$fixture" env 'INPUT_OPENAI-API-KEY=test-key' MOCK_EXPECT_CODEX_API_KEY=test-key
