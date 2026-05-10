@@ -78,6 +78,11 @@ mock_slug_present="$(value_for_call MOCK_SLUG_PRESENT yes)"
 mock_slug="$(value_for_call MOCK_SLUG mock-article)"
 mock_thumbnail="$(value_for_call MOCK_THUMBNAIL valid)"
 
+if [[ -n "${MOCK_EXPECT_CODEX_API_KEY:-}" && "${CODEX_API_KEY:-}" != "$MOCK_EXPECT_CODEX_API_KEY" ]]; then
+  echo "mock codex: CODEX_API_KEY was not propagated" >&2
+  exit 1
+fi
+
 if [[ "$mock_index" == "yes" ]]; then
   {
     printf -- '---\n'
@@ -343,4 +348,4 @@ test -n "$(git -C "$fixture" status --porcelain -- articles)"
 
 fixture="${test_root}/entrypoint-with-input-key"
 create_git_fixture_repo "$fixture"
-assert_success "action entrypoint still accepts an OpenAI API key input" run_action_entrypoint "$fixture" env INPUT_OPENAI_API_KEY=test-key
+assert_success "action entrypoint propagates the API key input for codex exec" run_action_entrypoint "$fixture" env INPUT_OPENAI_API_KEY=test-key MOCK_EXPECT_CODEX_API_KEY=test-key

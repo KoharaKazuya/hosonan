@@ -47,7 +47,7 @@ jobs:
           git push
 ```
 
-利用側リポジトリには `OPENAI_API_KEY` secret を設定してください。Action 内では必須の `openai-api-key` input として受け取り、`OPENAI_API_KEY` として Codex CLI に渡します。
+利用側リポジトリには `OPENAI_API_KEY` secret を設定してください。Action 内では必須の `openai-api-key` input として受け取り、Codex CLI の `codex exec` が参照する `CODEX_API_KEY` と、互換性のための `OPENAI_API_KEY` として渡します。
 
 `article-count` input には 1 回の Action 実行で生成する記事数を `1` から `10` の整数で指定できます。省略時は `1` です。複数本を指定した場合も Codex CLI には 1 回につき 1 本だけ生成させ、生成と検証と保存を記事数分繰り返します。2 本目以降の Codex 実行時には、それ以前のループで保存済みの記事も既存記事として参照されるため、重複回避の対象になります。
 
@@ -107,7 +107,7 @@ Action output には、既存の workflow から参照しやすいように 1 �
 
 ## Codex CLI の前提
 
-Action image 内に Codex CLI をインストールし、GitHub Actions では必須の `openai-api-key` input を `OPENAI_API_KEY` として渡して実行します。entrypoint を直接実行する場合は `OPENAI_API_KEY` を必須チェックせず、認証は Codex CLI の実行環境に委ねます。
+Action image 内に Codex CLI をインストールし、GitHub Actions では必須の `openai-api-key` input を `CODEX_API_KEY` と `OPENAI_API_KEY` として渡して実行します。entrypoint を直接実行する場合は API key の必須チェックをせず、認証は Codex CLI の実行環境に委ねます。
 
 記事生成に必要なシステム上の制約は `PROMPT.md` で管理します。ユーザーが変更する好み、関心、記事フォーマットは、利用側リポジトリの `config/` 以下に任意のファイルとして置きます。
 

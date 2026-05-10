@@ -12,6 +12,7 @@ default_generator_root="$script_dir"
 
 if [[ -n "${INPUT_OPENAI_API_KEY:-}" ]]; then
   export OPENAI_API_KEY="$INPUT_OPENAI_API_KEY"
+  export CODEX_API_KEY="$INPUT_OPENAI_API_KEY"
 fi
 
 if [[ -n "${INPUT_TIMEZONE:-}" ]]; then
