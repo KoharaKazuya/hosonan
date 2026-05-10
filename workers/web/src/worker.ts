@@ -115,10 +115,17 @@ export default {
     }
 
     if (requestUrl.pathname === "/settings") {
+      if (request.method === "POST") {
+        return settingsSaveResponse(request, env);
+      }
       if (request.method !== "GET" && request.method !== "HEAD") {
-        return methodNotAllowed(["GET", "HEAD"]);
+        return methodNotAllowed(["GET", "HEAD", "POST"]);
       }
       return responseForMethod(await settingsPageResponse(request, env), request.method);
+    }
+
+    if (requestUrl.pathname === "/api/github/setup") {
+      return requireMethod(request, ["GET"], () => githubSetupResponse(request, env));
     }
 
     if (requestUrl.pathname.startsWith("/api/auth/")) {
@@ -142,6 +149,11 @@ export default {
     canonicalUrl.pathname = article.canonicalPath;
     canonicalUrl.search = "";
     canonicalUrl.hash = "";
+    const storedArticle = await activeStoredArticleForPath(env, article.r2Key);
+    if (!storedArticle) {
+      return textResponse("not found\n", 404, request.method);
+    }
+
     const defaultCache = getDefaultCache();
     const cacheKey = new Request(canonicalUrl.toString(), { method: "GET" });
     const cached = await defaultCache.match(cacheKey);
@@ -180,7 +192,7 @@ export async function recommendArticles(
        r.channel_name, r.channel_icon_path, r.channel_biography, r.channel_updated_at
      FROM articles a
      JOIN repositories r ON r.repository_id = a.repository_id
-     WHERE a.status = 'active' AND r.status = 'active'
+     WHERE a.status = 'active' AND r.status = 'active' AND r.sync_enabled = 1
      ORDER BY a.created_at DESC
      LIMIT ?`
   )
@@ -198,6 +210,18 @@ async function homePageResponse(env: Env, viewerContext: ViewerContext, limit: n
       "Content-Type": "text/html; charset=utf-8"
     }
   });
+}
+
+async function activeStoredArticleForPath(env: Env, r2Key: string): Promise<{ repository_id: number } | null> {
+  return env.GITHUB_REGISTRY.prepare(
+    `SELECT a.repository_id
+     FROM articles a
+     JOIN repositories r ON r.repository_id = a.repository_id
+     WHERE a.r2_key = ? AND a.status = 'active' AND r.status = 'active' AND r.sync_enabled = 1
+     LIMIT 1`
+  )
+    .bind(r2Key)
+    .first<{ repository_id: number }>();
 }
 
 function buildHomePage(articles: StoredArticle[]): string {
@@ -270,6 +294,8 @@ function channelPlaceholderText(displayName: string): string {
 type AuthEnv = Env & {
   GITHUB_CLIENT_ID?: string;
   GITHUB_CLIENT_SECRET?: string;
+  GITHUB_APP_SLUG?: string;
+  GITHUB_USER_TOKEN_ENCRYPTION_KEY?: string;
 };
 
 type UserRecord = {
@@ -298,6 +324,15 @@ type PasskeyCredentialRecord = {
 type SettingsAuthState = {
   hasPasskey: boolean;
   hasGitHub: boolean;
+};
+
+type SettingsRepository = {
+  repository_id: number;
+  owner_login: string;
+  repo_name: string;
+  full_name: string;
+  status: string;
+  sync_enabled: number;
 };
 
 type GitHubTokenResponse = {
@@ -656,7 +691,65 @@ async function githubCallbackResponse(request: Request, env: Env): Promise<Respo
   if (!user) {
     return jsonResponse({ error: "identity_already_linked" }, 409);
   }
+  await saveGitHubUserToken(authEnv, user.user_id, String(githubUser.id), tokenBody.access_token);
   return sessionRedirectResponse(env, user, challenge.redirect_path ?? "/");
+}
+
+async function githubSetupResponse(request: Request, env: Env): Promise<Response> {
+  const user = await currentUser(request, env);
+  if (!user) {
+    return Response.redirect(`${originFromRequest(request)}/login?redirectTo=%2Fsettings`, 303);
+  }
+
+  const requestUrl = new URL(request.url);
+  const installationId = Number(requestUrl.searchParams.get("installation_id"));
+  if (!Number.isSafeInteger(installationId) || installationId <= 0) {
+    return jsonResponse({ error: "invalid_installation_id" }, 400);
+  }
+
+  const timestamp = nowIso();
+  await env.GITHUB_REGISTRY.prepare(
+    `INSERT OR IGNORE INTO installations
+       (installation_id, account_id, account_login, account_type, status, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  )
+    .bind(installationId, null, null, null, "active", timestamp, timestamp)
+    .run();
+  await env.GITHUB_REGISTRY.prepare(
+    `INSERT INTO github_installation_users (installation_id, user_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?)
+     ON CONFLICT(installation_id, user_id) DO UPDATE SET updated_at = excluded.updated_at`
+  )
+    .bind(installationId, user.user_id, timestamp, timestamp)
+    .run();
+
+  return Response.redirect(`${originFromRequest(request)}/settings`, 303);
+}
+
+async function saveGitHubUserToken(env: AuthEnv, userId: string, githubUserId: string, accessToken: string): Promise<void> {
+  const timestamp = nowIso();
+  await env.GITHUB_REGISTRY.prepare(
+    `INSERT INTO github_user_tokens (user_id, github_user_id, encrypted_access_token, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(user_id, github_user_id) DO UPDATE SET
+       encrypted_access_token = excluded.encrypted_access_token,
+       updated_at = excluded.updated_at`
+  )
+    .bind(userId, githubUserId, await encryptGitHubUserToken(env, accessToken), timestamp, timestamp)
+    .run();
+}
+
+async function encryptGitHubUserToken(env: AuthEnv, accessToken: string): Promise<string> {
+  const keyMaterial = env.GITHUB_USER_TOKEN_ENCRYPTION_KEY ?? env.GITHUB_CLIENT_SECRET;
+  if (!keyMaterial) {
+    throw new Error("GitHub user token encryption key is not configured.");
+  }
+
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(keyMaterial));
+  const key = await crypto.subtle.importKey("raw", digest, { name: "AES-GCM" }, false, ["encrypt"]);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new TextEncoder().encode(accessToken));
+  return `aes-gcm:${bytesToBase64Url(iv)}:${bytesToBase64Url(new Uint8Array(ciphertext))}`;
 }
 
 async function currentUser(request: Request, env: Env): Promise<UserRecord | null> {
@@ -800,6 +893,48 @@ async function settingsAuthState(env: Env, userId: string): Promise<SettingsAuth
   };
 }
 
+async function settingsRepositories(env: Env, userId: string): Promise<SettingsRepository[]> {
+  const result = await env.GITHUB_REGISTRY.prepare(
+    `SELECT r.repository_id, r.owner_login, r.repo_name, r.full_name, r.status, r.sync_enabled
+     FROM github_installation_users u
+     JOIN repositories r ON r.installation_id = u.installation_id
+     WHERE u.user_id = ? AND r.status != 'deleted'
+     ORDER BY r.full_name COLLATE NOCASE`
+  )
+    .bind(userId)
+    .all<SettingsRepository>();
+  return result.results ?? [];
+}
+
+async function settingsSaveResponse(request: Request, env: Env): Promise<Response> {
+  const user = await currentUser(request, env);
+  if (!user) {
+    return Response.redirect(`${originFromRequest(request)}/login?redirectTo=%2Fsettings`, 303);
+  }
+
+  const form = await request.formData();
+  const enabledIds = new Set(
+    form
+      .getAll("sync_repository_id")
+      .map((value) => Number(value))
+      .filter((value) => Number.isSafeInteger(value) && value > 0)
+  );
+  const repositories = await settingsRepositories(env, user.user_id);
+  const timestamp = nowIso();
+
+  for (const repository of repositories) {
+    const nextEnabled = enabledIds.has(repository.repository_id) ? 1 : 0;
+    if (nextEnabled === repository.sync_enabled) {
+      continue;
+    }
+    await env.GITHUB_REGISTRY.prepare("UPDATE repositories SET sync_enabled = ?, updated_at = ? WHERE repository_id = ?")
+      .bind(nextEnabled, timestamp, repository.repository_id)
+      .run();
+  }
+
+  return Response.redirect(`${originFromRequest(request)}/settings`, 303);
+}
+
 async function createChallenge(
   env: Env,
   input: {
@@ -908,7 +1043,11 @@ async function settingsPageResponse(request: Request, env: Env): Promise<Respons
     return Response.redirect(`${originFromRequest(request)}/login?redirectTo=%2Fsettings`, 303);
   }
 
-  return new Response(buildSettingsPage(user, await settingsAuthState(env, user.user_id)), {
+  const [authState, repositories] = await Promise.all([
+    settingsAuthState(env, user.user_id),
+    settingsRepositories(env, user.user_id)
+  ]);
+  return new Response(buildSettingsPage(user, authState, repositories, env as AuthEnv), {
     headers: {
       "Cache-Control": "no-store",
       "Content-Type": "text/html; charset=utf-8"
@@ -1078,13 +1217,28 @@ document.querySelector("#logout").addEventListener("click", async () => {
 </html>`;
 }
 
-function buildSettingsPage(user: UserRecord, authState: SettingsAuthState): string {
+function buildSettingsPage(
+  user: UserRecord,
+  authState: SettingsAuthState,
+  repositories: SettingsRepository[],
+  authEnv: AuthEnv
+): string {
   const passkeyControl = authState.hasPasskey
     ? `<button class="button" type="button" disabled>Passkey 登録済み</button>`
     : `<button class="button" type="button" id="register-passkey">Passkey を追加</button>`;
   const githubControl = authState.hasGitHub
     ? `<button class="button secondary" type="button" disabled>GitHub 連携済み</button>`
     : `<a class="button secondary" href="/api/auth/github/start?redirectTo=%2Fsettings">GitHub を連携</a>`;
+  const installControl = authEnv.GITHUB_APP_SLUG
+    ? `<a class="button secondary" href="https://github.com/apps/${encodeURIComponent(authEnv.GITHUB_APP_SLUG)}/installations/new">GitHub App をインストール</a>`
+    : `<button class="button secondary" type="button" disabled>GitHub App 未設定</button>`;
+  const repositoryControls =
+    repositories.length === 0
+      ? `<p class="muted">インストール済み repository はありません。</p>`
+      : `<form method="post" class="repo-form">
+${repositories.map(buildRepositoryCheckbox).join("\n")}
+<button class="button" type="submit">保存</button>
+</form>`;
   return `<!doctype html>
 <html lang="ja">
 <head>
@@ -1093,17 +1247,23 @@ function buildSettingsPage(user: UserRecord, authState: SettingsAuthState): stri
 <title>設定 - Hosonan</title>
 ${buildInlineStyle(`
 :root{color-scheme:light dark;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.6;background:#f7f7f8;color:#1f2328}
-.settings{width:min(100% - 32px,560px);margin:0 auto;padding:48px 0}
+.settings{width:min(100% - 32px,720px);margin:0 auto;padding:48px 0}
 .settings h1{margin:0 0 10px;font-size:1.7rem;line-height:1.2}
 .account{margin:0 0 24px;color:#57606a}
 .section{padding:20px 0;border-top:1px solid #d0d7de}
 .section h2{margin:0 0 12px;font-size:1.1rem}
 .actions{display:flex;flex-wrap:wrap;gap:10px}
+.repo-form{display:grid;gap:12px}
+.repo-row{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start;padding:12px 0;border-top:1px solid #d8dee4}
+.repo-row:first-child{border-top:0}
+.repo-row input{margin-top:.25em}
+.repo-name{display:block;font-weight:600;overflow-wrap:anywhere}
+.repo-state{display:block;color:#57606a;font-size:.9rem}
 .button{min-height:42px;border:1px solid #0969da;border-radius:6px;padding:8px 12px;font:inherit;font-weight:600;background:#0969da;color:#fff;cursor:pointer;text-decoration:none}
 .button.secondary{border-color:#d0d7de;background:#fff;color:#1f2328}
 .button:disabled{border-color:#d0d7de;background:#eaeef2;color:#57606a;cursor:default}
-.status{min-height:1.5em;color:#57606a}
-@media (prefers-color-scheme:dark){:root{background:#0d1117;color:#f0f6fc}.account,.status{color:#8b949e}.section{border-color:#30363d}.button.secondary{border-color:#30363d;background:#161b22;color:#f0f6fc}.button:disabled{border-color:#30363d;background:#21262d;color:#8b949e}}
+.status,.muted{min-height:1.5em;color:#57606a}
+@media (prefers-color-scheme:dark){:root{background:#0d1117;color:#f0f6fc}.account,.status,.muted,.repo-state{color:#8b949e}.section,.repo-row{border-color:#30363d}.button.secondary{border-color:#30363d;background:#161b22;color:#f0f6fc}.button:disabled{border-color:#30363d;background:#21262d;color:#8b949e}}
 `)}
 </head>
 <body>
@@ -1117,11 +1277,31 @@ ${passkeyControl}
 ${githubControl}
 </div>
 </section>
+<section class="section">
+<h2>GitHub App</h2>
+<div class="actions">
+${installControl}
+</div>
+</section>
+<section class="section">
+<h2>同期する repository</h2>
+${repositoryControls}
+</section>
 <p class="status" id="status"></p>
 </main>
 ${authState.hasPasskey ? "" : settingsPasskeyScript()}
 </body>
 </html>`;
+}
+
+function buildRepositoryCheckbox(repository: SettingsRepository): string {
+  const checked = repository.sync_enabled === 1 ? " checked" : "";
+  const disabled = repository.status === "active" ? "" : " disabled";
+  const statusText = repository.status === "active" ? "配信可能" : "GitHub 側で配信不可";
+  return `<label class="repo-row">
+<input type="checkbox" name="sync_repository_id" value="${repository.repository_id}"${checked}${disabled}>
+<span><span class="repo-name">${escapeHtml(repository.full_name)}</span><span class="repo-state">${escapeHtml(statusText)}</span></span>
+</label>`;
 }
 
 function settingsPasskeyScript(): string {

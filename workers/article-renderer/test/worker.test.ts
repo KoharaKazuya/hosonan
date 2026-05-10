@@ -237,7 +237,7 @@ describe("article renderer", () => {
 
     await syncRepositoryMessage(message(), env(bucket, new MockDurableObjectNamespace(stub), new MockQueue(), registry));
 
-    expect(github.createInstallationAccessToken).toHaveBeenCalledWith(expect.objectContaining({ GITHUB_APP_ID: "1" }), 123);
+    expect(github.createInstallationAccessToken).toHaveBeenCalledWith(expect.objectContaining({ GITHUB_APP_ID: "1" }), 123, 42);
     expect(github.compareCommits).toHaveBeenCalledWith("octo", "articles", "old", "new", "token");
     expect(github.fetchChannelConfigAtCommit).not.toHaveBeenCalled();
     expect(bucket.deletes).toEqual(["gh/octo/articles/2026-05-01/removed/index.html"]);
@@ -517,7 +517,7 @@ describe("article renderer", () => {
     expect(bucket.puts[0].key).toBe("gh/octo/articles/2026-05-03/latest/index.html");
   });
 
-  it("deletes previous R2 objects for inactive repositories without calling GitHub", async () => {
+  it("keeps previous R2 objects and article records for inactive repositories without calling GitHub", async () => {
     const bucket = new MockR2Bucket();
     const registry = new MockD1Database();
     const stub = new MockRepoSyncStub();
@@ -542,9 +542,19 @@ describe("article renderer", () => {
 
     expect(github.createInstallationAccessToken).not.toHaveBeenCalled();
     expect(github.fetchDefaultBranchHead).not.toHaveBeenCalled();
-    expect(bucket.deletes).toEqual(["gh/octo/articles/2026-05-01/old/index.html"]);
-    expect(stub.completed?.result).toEqual({ syncedCommit: undefined, articleIndex: [] });
-    expect(registry.articles.get("42:articles/2026-05-01/old/index.md")?.status).toBe("inactive");
+    expect(bucket.deletes).toEqual([]);
+    expect(stub.completed?.result).toEqual({
+      syncedCommit: "old",
+      articleIndex: [
+        {
+          date: "2026-05-01",
+          slug: "old",
+          path: "articles/2026-05-01/old/index.md",
+          r2Key: "gh/octo/articles/2026-05-01/old/index.html"
+        }
+      ]
+    });
+    expect(registry.articles.get("42:articles/2026-05-01/old/index.md")?.status).toBe("active");
   });
 
   it("reports failures to the repo sync state without completing the commit", async () => {
@@ -603,7 +613,7 @@ describe("article renderer", () => {
       env(bucket, new MockDurableObjectNamespace(stub), queue)
     );
 
-    expect(github.createInstallationAccessToken).toHaveBeenCalledWith(expect.objectContaining({ GITHUB_APP_ID: "1" }), 123);
+    expect(github.createInstallationAccessToken).toHaveBeenCalledWith(expect.objectContaining({ GITHUB_APP_ID: "1" }), 123, 42);
     expect(github.fetchDefaultBranchHead).toHaveBeenCalledWith("octo", "articles", "main", "token");
     expect(github.fetchChannelConfigAtCommit).toHaveBeenCalledWith("octo", "articles", "fresh-head", "token");
     expect(github.listArticleFilesAtCommit).toHaveBeenCalledWith("octo", "articles", "fresh-head", "token");
@@ -741,7 +751,7 @@ describe("article renderer", () => {
       env(bucket)
     );
 
-    expect(github.createInstallationAccessToken).toHaveBeenCalledWith(expect.objectContaining({ GITHUB_APP_ID: "1" }), 123);
+    expect(github.createInstallationAccessToken).toHaveBeenCalledWith(expect.objectContaining({ GITHUB_APP_ID: "1" }), 123, 42);
     expect(github.fetchDefaultBranchHead).not.toHaveBeenCalled();
     expect(github.listArticleFilesAtCommit).not.toHaveBeenCalled();
     expect(github.fetchMarkdownAtCommit).toHaveBeenCalledWith(

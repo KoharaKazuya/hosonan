@@ -131,9 +131,12 @@ export async function createGitHubAppJwt(env: Env): Promise<string> {
   return `${unsignedToken}.${base64Url(signature)}`;
 }
 
-export async function createInstallationAccessToken(env: Env, installationId: number): Promise<string> {
+export async function createInstallationAccessToken(env: Env, installationId: number, repositoryId: number): Promise<string> {
   const jwt = await createGitHubAppJwt(env);
-  const response = await githubFetch(`https://api.github.com/app/installations/${installationId}/access_tokens`, tokenHeaders(`Bearer ${jwt}`, "POST"));
+  const response = await githubFetch(`https://api.github.com/app/installations/${installationId}/access_tokens`, {
+    ...tokenHeaders(`Bearer ${jwt}`, "POST"),
+    body: JSON.stringify({ repository_ids: [repositoryId] })
+  });
 
   if (!response.ok) {
     throw new Error(`Failed to create GitHub installation token: ${response.status}`);

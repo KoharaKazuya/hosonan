@@ -48,6 +48,8 @@ interface StoredRepository {
   owner_login: string;
   repo_name: string;
   default_branch: string;
+  status: string;
+  sync_enabled: number;
 }
 
 function repoStateObject(env: Env, repositoryId: number): DurableObjectStub {
@@ -77,6 +79,9 @@ function retryAfterSeconds(timestamp: number, now = Date.now()): number {
 function isConverged(state: RepoSyncState): boolean {
   if (state.desiredState === "active") {
     return Boolean(state.lastSyncedCommit) && state.targetCommit === state.lastSyncedCommit;
+  }
+  if (state.desiredState === "inactive") {
+    return true;
   }
   return state.lastArticleIndex.length === 0;
 }
@@ -138,6 +143,10 @@ async function handlePush(payload: GitHubPushPayload, env: Env): Promise<Respons
   }
 
   await upsertRepository(env, payload.installation.id, payload.repository, "active");
+  const stored = await findRepository(env, payload.repository.id);
+  if (!stored || stored.status !== "active" || stored.sync_enabled !== 1) {
+    return new Response("ignored\n", { status: 202 });
+  }
   await notifyRepository(env, payload.installation.id, payload.repository, "active", payload.after);
   return Response.json({ notified: true, repositoryId: payload.repository.id, targetCommit: payload.after });
 }
@@ -148,7 +157,6 @@ async function handleInstallation(payload: GitHubInstallationEventPayload, env: 
     await upsertInstallation(env, payload.installation, "active");
     for (const repository of payload.repositories ?? []) {
       await upsertRepository(env, payload.installation.id, repository, "active");
-      await notifyRepository(env, payload.installation.id, repository, "active");
     }
     return Response.json({ handled: true, event: "installation", action });
   }
@@ -158,7 +166,6 @@ async function handleInstallation(payload: GitHubInstallationEventPayload, env: 
     const repositories = await listRepositoriesByInstallation(env, payload.installation.id);
     for (const repository of repositories) {
       await updateRepositoryStatus(env, repository.repository_id, "deleted");
-      await notifyStoredRepository(env, repository, "deleted");
     }
     return Response.json({ handled: true, event: "installation", action });
   }
@@ -175,7 +182,6 @@ async function handleInstallationRepositories(
   if (action === "added") {
     for (const repository of payload.repositories_added ?? []) {
       await upsertRepository(env, installationId, repository, "active");
-      await notifyRepository(env, installationId, repository, "active");
     }
     return Response.json({ handled: true, event: "installation_repositories", action });
   }
@@ -183,7 +189,6 @@ async function handleInstallationRepositories(
   if (action === "removed") {
     for (const repository of payload.repositories_removed ?? []) {
       await updateRepositoryStatus(env, repository.id, "inactive");
-      await notifyRepository(env, installationId, repository, "inactive");
     }
     return Response.json({ handled: true, event: "installation_repositories", action });
   }
@@ -198,19 +203,12 @@ async function handleRepository(payload: GitHubRepositoryEventPayload, env: Env)
 
   if (action === "deleted") {
     await updateRepositoryStatus(env, repository.id, "deleted");
-    const stored = await findRepository(env, repository.id);
-    if (stored) {
-      await notifyStoredRepository(env, stored, "deleted");
-    } else if (installationId) {
-      await notifyRepository(env, installationId, repository, "deleted");
-    }
     return Response.json({ handled: true, event: "repository", action });
   }
 
   if (action === "privatized" || action === "archived") {
     if (installationId) {
       await upsertRepository(env, installationId, repository, "inactive");
-      await notifyRepository(env, installationId, repository, "inactive");
     }
     return Response.json({ handled: true, event: "repository", action });
   }
@@ -220,7 +218,8 @@ async function handleRepository(payload: GitHubRepositoryEventPayload, env: Env)
       return new Response("ignored\n", { status: 202 });
     }
     await upsertRepository(env, installationId, repository, "active");
-    if (action !== "edited") {
+    const stored = await findRepository(env, repository.id);
+    if (action !== "edited" && stored?.status === "active" && stored.sync_enabled === 1) {
       await notifyRepository(env, installationId, repository, "active");
     }
     return Response.json({ handled: true, event: "repository", action });
@@ -335,7 +334,7 @@ async function updateRepositoryOwnerLogin(env: Env, installationId: number, from
 
 async function listRepositoriesByInstallation(env: Env, installationId: number): Promise<StoredRepository[]> {
   const result = await env.GITHUB_REGISTRY.prepare(
-    "SELECT repository_id, installation_id, owner_login, repo_name, default_branch FROM repositories WHERE installation_id = ? AND status != 'deleted'"
+    "SELECT repository_id, installation_id, owner_login, repo_name, default_branch, status, sync_enabled FROM repositories WHERE installation_id = ? AND status != 'deleted'"
   )
     .bind(installationId)
     .all<StoredRepository>();
@@ -344,7 +343,7 @@ async function listRepositoriesByInstallation(env: Env, installationId: number):
 
 async function findRepository(env: Env, repositoryId: number): Promise<StoredRepository | undefined> {
   const result = await env.GITHUB_REGISTRY.prepare(
-    "SELECT repository_id, installation_id, owner_login, repo_name, default_branch FROM repositories WHERE repository_id = ?"
+    "SELECT repository_id, installation_id, owner_login, repo_name, default_branch, status, sync_enabled FROM repositories WHERE repository_id = ?"
   )
     .bind(repositoryId)
     .first<StoredRepository>();
@@ -517,7 +516,7 @@ export class RepoSyncStateDurableObject {
       return { completed: false, ignored: true };
     }
 
-    if (state.desiredState === "active") {
+    if (state.desiredState === "active" || state.desiredState === "inactive") {
       state.lastSyncedCommit = result.syncedCommit;
       state.targetCommit = result.syncedCommit;
       state.lastArticleIndex = result.articleIndex;

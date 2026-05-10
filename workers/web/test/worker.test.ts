@@ -81,6 +81,18 @@ class MockD1PreparedStatement {
     if (this.query.includes("FROM passkey_credentials WHERE user_id = ?")) {
       return this.db.result(this.db.passkeyCredentials.filter((credential) => credential.user_id === this.values[0]) as T[]);
     }
+    if (this.query.includes("FROM github_installation_users u")) {
+      const installationIds = new Set(
+        this.db.installationUsers
+          .filter((entry) => entry.user_id === this.values[0])
+          .map((entry) => entry.installation_id)
+      );
+      return this.db.result(
+        this.db.repositories
+          .filter((repository) => installationIds.has(repository.installation_id) && repository.status !== "deleted")
+          .sort((left, right) => String(left.full_name).localeCompare(String(right.full_name))) as T[]
+      );
+    }
 
     return {
       success: true,
@@ -104,6 +116,9 @@ class MockD1Database {
   readonly challenges: Array<Record<string, unknown>> = [];
   readonly sessions: Array<Record<string, unknown>> = [];
   readonly passkeyCredentials: Array<Record<string, unknown>> = [];
+  readonly installationUsers: Array<Record<string, unknown>> = [];
+  readonly githubUserTokens: Array<Record<string, unknown>> = [];
+  readonly repositories: Array<Record<string, unknown>> = [];
 
   constructor(readonly articles: Array<Record<string, unknown>> = []) {}
 
@@ -113,7 +128,7 @@ class MockD1Database {
 
   select(limit: number): Array<Record<string, unknown>> {
     return this.articles
-      .filter((article) => article.status === "active")
+      .filter((article) => article.status === "active" && article.repository_status !== "inactive" && article.sync_enabled !== 0)
       .sort((left, right) => String(right.created_at).localeCompare(String(left.created_at)))
       .slice(0, limit);
   }
@@ -145,6 +160,17 @@ class MockD1Database {
     }
     if (query.includes("FROM auth_identities WHERE provider = 'github' AND user_id = ?")) {
       return this.identities.find((entry) => entry.provider === "github" && entry.user_id === values[0]) ?? null;
+    }
+    if (query.includes("FROM articles a") && query.includes("a.r2_key = ?")) {
+      return (
+        this.articles.find(
+          (article) =>
+            article.r2_key === values[0] &&
+            article.status === "active" &&
+            article.repository_status !== "inactive" &&
+            article.sync_enabled !== 0
+        ) ?? null
+      );
     }
     if (query.includes("FROM passkey_credentials WHERE credential_id = ?")) {
       return this.passkeyCredentials.find((credential) => credential.credential_id === values[0]) ?? null;
@@ -250,6 +276,27 @@ class MockD1Database {
       if (session) {
         session.revoked_at = values[0];
       }
+    } else if (query.includes("INSERT INTO github_user_tokens")) {
+      this.githubUserTokens.push({
+        user_id: values[0],
+        github_user_id: values[1],
+        encrypted_access_token: values[2],
+        created_at: values[3],
+        updated_at: values[4]
+      });
+    } else if (query.includes("INSERT INTO github_installation_users")) {
+      this.installationUsers.push({
+        installation_id: values[0],
+        user_id: values[1],
+        created_at: values[2],
+        updated_at: values[3]
+      });
+    } else if (query.startsWith("UPDATE repositories SET sync_enabled")) {
+      const repository = this.repositories.find((entry) => entry.repository_id === values[2]);
+      if (repository) {
+        repository.sync_enabled = values[0];
+        repository.updated_at = values[1];
+      }
     }
 
     return this.result([]);
@@ -328,6 +375,8 @@ function article(overrides: Record<string, unknown> = {}): Record<string, unknow
     canonical_path: "/gh/octo/articles/2026-05-02/example/",
     r2_key: "gh/octo/articles/2026-05-02/example/index.html",
     status: "active",
+    repository_status: "active",
+    sync_enabled: 1,
     synced_commit: "abc123",
     updated_at: "2026-05-02T00:00:00.000Z",
     ...overrides
@@ -429,6 +478,84 @@ describe("site worker", () => {
     expect(html).toContain("Passkey 登録済み");
     expect(html).not.toContain('id="register-passkey"');
     expect(html).toContain("/api/auth/github/start?redirectTo=%2Fsettings");
+  });
+
+  it("updates only changed repository sync selections from settings", async () => {
+    const registry = new MockD1Database();
+    await worker.fetch(
+      request("/api/auth/passkey/register/options", "POST", { body: JSON.stringify({}) }),
+      env(new MockR2Bucket(), registry)
+    );
+    const verified = await worker.fetch(
+      request("/api/auth/passkey/register/verify", "POST", {
+        body: JSON.stringify({ response: registrationResponse("credential-id") })
+      }),
+      env(new MockR2Bucket(), registry)
+    );
+    const cookie = verified.headers.get("set-cookie")?.split(";")[0] ?? "";
+    const userId = String(registry.users[0].user_id);
+    registry.installationUsers.push({ installation_id: 123, user_id: userId });
+    registry.repositories.push(
+      {
+        repository_id: 42,
+        installation_id: 123,
+        full_name: "octo/articles",
+        owner_login: "octo",
+        repo_name: "articles",
+        status: "active",
+        sync_enabled: 0
+      },
+      {
+        repository_id: 43,
+        installation_id: 123,
+        full_name: "octo/notes",
+        owner_login: "octo",
+        repo_name: "notes",
+        status: "active",
+        sync_enabled: 1
+      }
+    );
+
+    const settings = await worker.fetch(request("/settings", "GET", { headers: { Cookie: cookie } }), env(new MockR2Bucket(), registry));
+    const html = await settings.text();
+    expect(html).toContain("octo/articles");
+    expect(html).toContain('value="42"');
+
+    const response = await worker.fetch(
+      request("/settings", "POST", {
+        headers: { Cookie: cookie, "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ sync_repository_id: "42" })
+      }),
+      env(new MockR2Bucket(), registry)
+    );
+
+    expect(response.status).toBe(303);
+    expect(registry.repositories.find((repository) => repository.repository_id === 42)?.sync_enabled).toBe(1);
+    expect(registry.repositories.find((repository) => repository.repository_id === 43)?.sync_enabled).toBe(0);
+  });
+
+  it("links GitHub App setup installation ids to the current user", async () => {
+    const registry = new MockD1Database();
+    await worker.fetch(
+      request("/api/auth/passkey/register/options", "POST", { body: JSON.stringify({}) }),
+      env(new MockR2Bucket(), registry)
+    );
+    const verified = await worker.fetch(
+      request("/api/auth/passkey/register/verify", "POST", {
+        body: JSON.stringify({ response: registrationResponse("credential-id") })
+      }),
+      env(new MockR2Bucket(), registry)
+    );
+    const cookie = verified.headers.get("set-cookie")?.split(";")[0] ?? "";
+
+    const response = await worker.fetch(
+      request("/api/github/setup?installation_id=123", "GET", { headers: { Cookie: cookie } }),
+      env(new MockR2Bucket(), registry)
+    );
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("https://articles.example/settings");
+    expect(registry.installationUsers[0]).toMatchObject({ installation_id: 123, user_id: registry.users[0].user_id });
   });
 
   it("stores GitHub OAuth state and redirects to GitHub", async () => {
@@ -837,7 +964,7 @@ describe("site worker", () => {
 
   it("returns a complete HTML document for stored article fragments", async () => {
     const bucket = new MockR2Bucket(new Map([["gh/octo/articles/2026-05-02/example/index.html", "<h1>Hello</h1>"]]));
-    const response = await worker.fetch(request("/gh/octo/articles/2026-05-02/example/"), env(bucket));
+    const response = await worker.fetch(request("/gh/octo/articles/2026-05-02/example/"), env(bucket, new MockD1Database([article()])));
 
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
@@ -850,7 +977,7 @@ describe("site worker", () => {
     const bucket = new MockR2Bucket(
       new Map([["gh/octo/articles/2026-05-02/example/index.html", ["<h1>Hel", "lo</h1>", "<p>body</p>"]]])
     );
-    const response = await worker.fetch(request("/gh/octo/articles/2026-05-02/example/"), env(bucket));
+    const response = await worker.fetch(request("/gh/octo/articles/2026-05-02/example/"), env(bucket, new MockD1Database([article()])));
     const html = await response.text();
 
     expect(html).toContain("/*! kiso.css v1.2.4 | MIT License | https://github.com/tak-dcxi/kiso.css */");
@@ -860,9 +987,10 @@ describe("site worker", () => {
 
   it("normalizes directory and index URLs to the same R2 key and cache key", async () => {
     const bucket = new MockR2Bucket(new Map([["gh/octo/articles/2026-05-02/example/index.html", "<p>cached</p>"]]));
+    const registry = new MockD1Database([article()]);
 
-    const first = await worker.fetch(request("/gh/octo/articles/2026-05-02/example/index.html"), env(bucket));
-    const second = await worker.fetch(request("/gh/octo/articles/2026-05-02/example/"), env(bucket));
+    const first = await worker.fetch(request("/gh/octo/articles/2026-05-02/example/index.html"), env(bucket, registry));
+    const second = await worker.fetch(request("/gh/octo/articles/2026-05-02/example/"), env(bucket, registry));
 
     expect(first.status).toBe(200);
     expect(second.status).toBe(200);
@@ -875,19 +1003,45 @@ describe("site worker", () => {
 
   it("does not fetch R2 again on cache hit", async () => {
     const bucket = new MockR2Bucket(new Map([["gh/octo/articles/2026-05-02/example/index.html", "<p>cached</p>"]]));
+    const registry = new MockD1Database([article()]);
 
-    await worker.fetch(request("/gh/octo/articles/2026-05-02/example/"), env(bucket));
-    const response = await worker.fetch(request("/gh/octo/articles/2026-05-02/example/"), env(bucket));
+    await worker.fetch(request("/gh/octo/articles/2026-05-02/example/"), env(bucket, registry));
+    const response = await worker.fetch(request("/gh/octo/articles/2026-05-02/example/"), env(bucket, registry));
 
     expect(response.status).toBe(200);
     expect(bucket.gets).toHaveLength(1);
   });
 
   it("returns 404 when the R2 object does not exist", async () => {
-    const response = await worker.fetch(request("/gh/octo/articles/2026-05-02/missing/"), env(new MockR2Bucket()));
+    const response = await worker.fetch(
+      request("/gh/octo/articles/2026-05-02/missing/"),
+      env(new MockR2Bucket(), new MockD1Database([article({ slug: "missing", r2_key: "gh/octo/articles/2026-05-02/missing/index.html" })]))
+    );
 
     expect(response.status).toBe(404);
     await expect(response.text()).resolves.toBe("not found\n");
+  });
+
+  it("returns 404 without reading R2 when the repository sync is disabled", async () => {
+    const bucket = new MockR2Bucket(new Map([["gh/octo/articles/2026-05-02/example/index.html", "<p>hidden</p>"]]));
+    const response = await worker.fetch(
+      request("/gh/octo/articles/2026-05-02/example/"),
+      env(bucket, new MockD1Database([article({ sync_enabled: 0 })]))
+    );
+
+    expect(response.status).toBe(404);
+    expect(bucket.gets).toEqual([]);
+  });
+
+  it("serves an existing R2 object again when repository sync is re-enabled", async () => {
+    const bucket = new MockR2Bucket(new Map([["gh/octo/articles/2026-05-02/example/index.html", "<p>restored</p>"]]));
+    const response = await worker.fetch(
+      request("/gh/octo/articles/2026-05-02/example/"),
+      env(bucket, new MockD1Database([article({ sync_enabled: 1 })]))
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.text()).resolves.toContain("<p>restored</p>");
   });
 
   it("returns 500 when the R2 object has no readable body", async () => {
@@ -897,7 +1051,7 @@ describe("site worker", () => {
       }
     };
 
-    const response = await worker.fetch(request("/gh/octo/articles/2026-05-02/example/"), env(bucket));
+    const response = await worker.fetch(request("/gh/octo/articles/2026-05-02/example/"), env(bucket, new MockD1Database([article()])));
 
     expect(response.status).toBe(500);
     await expect(response.text()).resolves.toBe("article body unavailable\n");
@@ -918,7 +1072,7 @@ describe("site worker", () => {
 
   it("supports HEAD without a response body", async () => {
     const bucket = new MockR2Bucket(new Map([["gh/octo/articles/2026-05-02/example/index.html", "<p>head</p>"]]));
-    const response = await worker.fetch(request("/gh/octo/articles/2026-05-02/example/", "HEAD"), env(bucket));
+    const response = await worker.fetch(request("/gh/octo/articles/2026-05-02/example/", "HEAD"), env(bucket, new MockD1Database([article()])));
 
     expect(response.status).toBe(200);
     await expect(response.text()).resolves.toBe("");

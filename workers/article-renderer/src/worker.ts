@@ -82,7 +82,7 @@ function githubBlobUrl(ownerLogin: string, repoName: string, commitSha: string, 
 }
 
 export async function rebuildRepositoryMessage(message: RebuildRepositoryQueueMessage, env: Env): Promise<number> {
-  const token = await createInstallationAccessToken(env, message.installationId);
+  const token = await createInstallationAccessToken(env, message.installationId, message.repositoryId);
   const targetCommit = await fetchDefaultBranchHead(message.ownerLogin, message.repoName, message.targetBranch, token);
   await updateRepositoryChannelConfig(message.repositoryId, message.ownerLogin, message.repoName, targetCommit, token, env);
   const articles = (await listArticleFilesAtCommit(message.ownerLogin, message.repoName, targetCommit, token)).sort(compareArticlePath);
@@ -109,7 +109,7 @@ export async function rebuildRepositoryChunkMessage(
   message: RebuildRepositoryChunkQueueMessage,
   env: Env
 ): Promise<ArticleIndexEntry[]> {
-  const token = await createInstallationAccessToken(env, message.installationId);
+  const token = await createInstallationAccessToken(env, message.installationId, message.repositoryId);
   const rendered: ArticleIndexEntry[] = [];
 
   for (const article of message.articles) {
@@ -195,7 +195,7 @@ async function syncActiveRepository(
   env: Env,
   stub: DurableObjectStub
 ): Promise<RepoSyncCompleteResult> {
-  const token = await createInstallationAccessToken(env, claim.installationId);
+  const token = await createInstallationAccessToken(env, claim.installationId, claim.repositoryId);
   const targetCommit = claim.targetCommit ?? (await fetchDefaultBranchHead(claim.ownerLogin, claim.repoName, claim.targetBranch, token));
   return syncClaimedRepository({ ...claim, targetCommit }, token, env, stub);
 }
@@ -205,19 +205,11 @@ async function syncInactiveRepository(
   env: Env,
   stub: DurableObjectStub
 ): Promise<RepoSyncCompleteResult> {
-  for (const article of claim.lastArticleIndex ?? []) {
-    await ensureLeaseFresh(claim, stub);
-    await env.ARTICLES_BUCKET.delete(article.r2Key);
-  }
-  await markRepositoryArticleRecordsStatus(
-    claim.repositoryId,
-    claim.desiredState === "deleted" ? "deleted" : "inactive",
-    env
-  );
+  await ensureLeaseFresh(claim, stub);
 
   return {
-    syncedCommit: undefined,
-    articleIndex: []
+    syncedCommit: claim.lastSyncedCommit,
+    articleIndex: claim.lastArticleIndex ?? []
   };
 }
 
