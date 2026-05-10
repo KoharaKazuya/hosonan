@@ -24,7 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: <owner>/<repo>/actions/codex@v1
+      - uses: KoharaKazuya/hosonan/actions/codex@v1
         with:
           timezone: Asia/Tokyo
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
@@ -48,7 +48,7 @@ jobs:
 
 利用側リポジトリには `OPENAI_API_KEY` secret を設定してください。Action 内では必須の `openai-api-key` input として受け取り、`OPENAI_API_KEY` として Codex CLI に渡します。
 
-利用側がこの Action を指定する箇所は `uses: <owner>/<repo>/actions/codex@v1` です。GitHub Actions は `actions/codex/Dockerfile` を build し、`node:24-bookworm-slim` ベースの container 内で Codex CLI と entrypoint を実行します。
+利用側がこの Action を指定する箇所は `uses: KoharaKazuya/hosonan/actions/codex@v1` です。GitHub Actions は `actions/codex/Dockerfile` を build し、`node:24-bookworm-slim` ベースの container 内で Codex CLI と entrypoint を実行します。
 
 利用側 workflow の雛形は `templates/user-repo/.github/workflows/generate-article.yml` にあります。
 

@@ -186,7 +186,7 @@ grep -q '^COPY entrypoint\.sh /opt/hosonan/entrypoint\.sh$' "${repo_root}/Docker
 grep -q '^COPY extract-article-titles\.sh /opt/hosonan/extract-article-titles\.sh$' "${repo_root}/Dockerfile"
 grep -q '^RUN chmod +x /opt/hosonan/extract-article-titles\.sh$' "${repo_root}/Dockerfile"
 grep -q '^ENTRYPOINT \["/opt/hosonan/entrypoint\.sh"\]$' "${repo_root}/Dockerfile"
-grep -q 'uses: <owner>/<repo>/actions/codex@v1' "${repo_root}/templates/user-repo/.github/workflows/generate-article.yml"
+grep -q 'uses: KoharaKazuya/hosonan/actions/codex@v1' "${repo_root}/templates/user-repo/.github/workflows/generate-article.yml"
 grep -q 'Commit generated article' "${repo_root}/templates/user-repo/.github/workflows/generate-article.yml"
 printf 'ok: Docker action interface and image definition are configured\n'
 
